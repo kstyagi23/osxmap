@@ -413,7 +413,7 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "center": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
                 "bounds": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
                 "zoom": {"type": "number", "minimum": 0, "maximum": 22}, "pitch": {"type": "number", "minimum": 0, "maximum": 78}, "bearing": {"type": "number", "minimum": -360, "maximum": 360},
-                "mode": {"type": "string", "enum": ["streets", "satellite", "terrain"]},
+                "mode": {"type": "string", "enum": ["streets", "satellite", "terrain", "spectral"]},
                 "enabled": {"type": "boolean"}, "exaggeration": {"type": "number", "minimum": 0, "maximum": 5},
                 "preference": {"type": "string", "enum": ["labels", "buildings", "roads", "places", "boundaries", "contours", "hillshade"]},
             }, "required": ["action"], "additionalProperties": False},
@@ -1592,8 +1592,8 @@ class AgentTools:
                 if key in arguments:
                     result[key] = map_actions.finite(arguments[key], key, *limits)
         elif action == "set_basemap":
-            if arguments.get("mode") not in {"streets", "satellite", "terrain"}:
-                raise ServiceError("Use a supported basemap: streets, satellite, or terrain.", 400)
+            if arguments.get("mode") not in {"streets", "satellite", "terrain", "spectral"}:
+                raise ServiceError("Use a supported basemap: streets, satellite, terrain, or spectral.", 400)
         elif action in {"set_terrain", "set_display"}:
             if type(arguments.get("enabled")) is not bool:
                 raise ServiceError("Map display/terrain enabled must be a boolean.", 400)

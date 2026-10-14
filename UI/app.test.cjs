@@ -140,6 +140,7 @@ function setup({ mobile = false } = {}) {
     Element, HTMLInputElement: class extends Element {}, HTMLTextAreaElement: class extends Element {},
     API_BASE_URL: '', AGENT_SOCKET_URL: '', apiPath: (path) => path,
     MAP_ACTION_NAMES: mapActions.MAP_ACTION_NAMES,
+    registerSpectralTerrain: () => 'spectral://terrain/{z}/{x}/{y}',
     setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: window.clearTimeout,
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject })),
@@ -152,6 +153,7 @@ function setup({ mobile = false } = {}) {
   app.elements = Object.fromEntries(document.querySelectorAll('[id]').map((element) => [element.id, element]));
   Object.assign(app, {
     theme: 'dark', mapMode: 'satellite', terrainEnabled: false, contourStrength: .55, terrainExaggeration: 1.25,
+    spectralTileUrl: 'spectral://terrain/{z}/{x}/{y}',
     worker: {}, country: { countryCode: 'US' }, selected: null,
     suggestionIndex: -1, suggestionController: null, searchController: null,
     geo: { pins: [], areas: [], routeStops: [], route: null, routeAnimation: null, state: {}, context: {} },
@@ -159,7 +161,7 @@ function setup({ mobile = false } = {}) {
     agentActivity: { connection: 'READY', request: 'Ready', tool: 'No active tool' },
     agentSocketReady: true, agentSubmitting: false, agentRunId: '',
     agentTerminalRunIds: new Set(), agentRequestSerial: 0, agentPostSerial: 0,
-    workspaceView: 'explore', searchResults: [], commandMode: false, searchFocused: false,
+    workspaceView: 'explore', searchResults: [], researchArea: null, commandMode: false, searchFocused: false,
     layerPreferences: { labels: true, buildings: true, roads: true, places: true, boundaries: true, contours: true, hillshade: true },
     routeStopTimers: new Map(), routeStopControllers: new Map(),
     updateDashboard() {}, setMapMode(mode) { this.mapMode = mode; },
@@ -340,6 +342,215 @@ test('building layers and highlights are visible in Streets and Terrain, never S
       }
     }
   }
+});
+
+test('spectral styles the altitude raster and contours without leaking into other modes', () => {
+  const { applyMonochrome } = setup();
+  const layers = [
+    { id: 'background', type: 'background' }, { id: 'land', type: 'fill', paint: { 'fill-opacity': .6 } },
+    { id: 'water', type: 'fill' }, { id: 'road', type: 'line' }, { id: 'place-label', type: 'symbol' },
+    ...buildingMap().getStyle().layers,
+    { id: 'local-water', type: 'fill' }, { id: 'local-park', type: 'fill' }, { id: 'local-road', type: 'line' },
+    { id: 'local-spectral-surface', type: 'raster' }, { id: 'local-spectral-water-water', type: 'fill' }, { id: 'local-satellite', type: 'raster' },
+    { id: 'local-hillshade', type: 'hillshade' }, { id: 'local-contours', type: 'line' }, { id: 'local-contour-labels', type: 'symbol' },
+  ];
+  const paint = new Map(); const visibility = new Map();
+  const map = {
+    getStyle: () => ({ layers }), getLayer: (id) => layers.find((layer) => layer.id === id),
+    setPaintProperty: (id, property, value) => paint.set(`${id}/${property}`, value),
+    setLayoutProperty: (id, property, value) => visibility.set(id, value),
+  };
+  for (const theme of ['dark', 'light']) {
+    applyMonochrome(map, theme, 'spectral');
+    for (const id of ['building', 'building-3d', 'local-buildings-preview', 'local-buildings', 'local-buildings-inferred', 'local-water', 'local-park']) assert.equal(visibility.get(id), 'none');
+    for (const id of ['local-spectral-surface', 'local-spectral-water-water', 'local-hillshade', 'local-contours', 'local-contour-labels']) assert.equal(visibility.get(id), 'visible');
+    assert.equal(paint.get('land/fill-opacity'), 0);
+    assert.equal(paint.get('water/fill-color'), '#07151d');
+    assert.equal(paint.get('local-satellite/raster-opacity'), 0);
+    assert.equal(paint.get('local-hillshade/hillshade-exaggeration'), .95);
+    assert.equal(paint.get('road/line-opacity'), .22);
+    assert.equal(paint.get('place-label/text-opacity'), .65);
+    const contour = JSON.parse(JSON.stringify(paint.get('local-contours/line-color')));
+    assert.deepEqual(contour, ['interpolate', ['linear'], ['to-number', ['get', 'ele'], 0], -500, '#082a32', 0, '#123e44', 250, '#197b80', 750, '#42cec5', 1500, '#a8cd85', 2500, '#efb478', 4000, '#ed7969', 6000, '#e0f4f3']);
+    applyMonochrome(map, theme, 'terrain');
+    assert.equal(visibility.get('local-spectral-surface'), 'none');
+    assert.equal(visibility.get('local-spectral-water-water'), 'none');
+    assert.equal(visibility.get('local-buildings'), 'visible');
+    assert.equal(paint.get('land/fill-opacity'), .6);
+    assert.equal(paint.get('local-hillshade/hillshade-exaggeration'), .7);
+    assert.equal(paint.get('local-road/line-opacity'), .72);
+    assert.equal(typeof paint.get('local-contours/line-color'), 'string');
+  }
+});
+
+test('spectral raster source is capped at DEM zoom and inserted above fills below hillshade', () => {
+  const { app } = setup();
+  const layers = [{ id: 'background', type: 'background' }, { id: 'land', type: 'fill' }, { id: 'water', type: 'fill', source: 'openmaptiles', 'source-layer': 'water', filter: ['==', 'class', 'ocean'] }, { id: 'road', type: 'line' }, { id: 'label', type: 'symbol' }];
+  const sources = new Map(); const anchors = new Map();
+  app.map = {
+    getStyle: () => ({ layers }), addSource: (id, value) => sources.set(id, value),
+    addLayer: (layer, before) => { anchors.set(layer.id, before); layers.splice(before ? layers.findIndex((item) => item.id === before) : layers.length, 0, layer); },
+  };
+  app.addCartographyLayers();
+  const source = sources.get('local-spectral-elevation');
+  assert.equal(source.type, 'raster'); assert.equal(source.tileSize, 256); assert.equal(source.maxzoom, 13);
+  assert.equal(source.tiles[0], 'spectral://terrain/{z}/{x}/{y}');
+  assert.equal(anchors.get('local-spectral-surface'), 'road');
+  assert.equal(layers.find((layer) => layer.id === 'local-spectral-surface').layout.visibility, 'none');
+  assert(layers.findIndex((layer) => layer.id === 'land') < layers.findIndex((layer) => layer.id === 'local-spectral-surface'));
+  assert(layers.findIndex((layer) => layer.id === 'local-spectral-surface') < layers.findIndex((layer) => layer.id === 'local-hillshade'));
+  const water = layers.find((layer) => layer.id === 'local-spectral-water-water');
+  assert.equal(water.source, 'openmaptiles'); assert.equal(water['source-layer'], 'water');
+  assert.equal(water.paint['fill-color'], '#07151d'); assert.equal(water.layout.visibility, 'none');
+  assert(layers.indexOf(water) > layers.findIndex((layer) => layer.id === 'local-spectral-surface'));
+  assert(layers.indexOf(water) < layers.findIndex((layer) => layer.id === 'local-hillshade'));
+});
+
+test('entering spectral enables 3D once, reselecting respects disabled relief and leaving preserves camera', () => {
+  const { app, context } = setup();
+  const cameras = []; const terrains = []; const storage = new Map();
+  context.localStorage = { setItem: (key, value) => storage.set(key, value) };
+  app.map = { getSource: () => ({}), setTerrain: (value) => terrains.push(value), easeTo: (value) => cameras.push(value) };
+  app.setMapMode = Object.getPrototypeOf(app).setMapMode;
+  app.applyMapMode = () => {};
+  app.setMapMode('spectral');
+  assert.equal(app.mapMode, 'spectral'); assert.equal(app.terrainEnabled, true);
+  assert.equal(cameras.at(-1).pitch, 60); assert.equal(terrains.at(-1).exaggeration, 1.25);
+  assert.equal(storage.get('mapMode'), 'spectral');
+  app.setTerrainView(false);
+  app.setMapMode('spectral');
+  assert.equal(app.terrainEnabled, false); assert.equal(cameras.length, 2);
+  app.setMapMode('route'); app.setMapMode('terrain'); app.setMapMode('satellite');
+  assert.equal(cameras.length, 2); assert.equal(app.terrainEnabled, false);
+  app.undoing = true;
+  app.setMapMode('spectral');
+  assert.equal(app.mapMode, 'satellite'); assert.equal(cameras.length, 2);
+});
+
+function spectralElements(result) {
+  for (const id of ['spectral-console', 'spectral-pitch', 'spectral-bearing', 'spectral-zoom', 'spectral-elevation', 'spectral-coordinates', 'spectral-location', 'terrain-exaggeration', 'terrain-exaggeration-value']) {
+    if (!result.app.elements[id]) {
+      const element = new Element(id === 'terrain-exaggeration' ? 'input' : 'output', { id });
+      result.document.documentElement.append(element); result.app.elements[id] = element;
+    }
+  }
+  for (const [attribute, values] of [['camera', ['overview', 'relief', 'cinematic']], ['layer', ['contours', 'hillshade', 'labels']], ['preset', ['alps', 'volcano', 'canyon']]]) {
+    for (const value of values) if (!result.document.querySelector(`[data-spectral-${attribute}="${value}"]`)) result.document.documentElement.append(new Element('button', { [`data-spectral-${attribute}`]: value }));
+  }
+  return result;
+}
+
+test('spectral console uses actual camera and center samples, not unrelated selected locations', async () => {
+  const { app, document, move } = spectralElements(metadataSetup());
+  app.mapMode = 'spectral';
+  document.getElementById('info-drawer-content').hidden = true;
+  app.selected = { name: 'Alps', lon: 7.96, lat: 46.58 };
+  app.updateSpectralConsole();
+  assert.equal(app.elements['spectral-console'].hidden, false);
+  assert.equal(app.elements['spectral-location'].textContent, 'Map center');
+  assert.equal(app.elements['spectral-coordinates'].textContent, '37.77490, -122.41940');
+  assert.equal(app.elements['spectral-zoom'].textContent, '12.00');
+  const snapshot = app.mapMetadataSnapshot();
+  assert.equal(snapshot.elevationVisible, true);
+  assert.equal(await app.refreshElevationMetadata(snapshot, 1), true);
+  assert.equal(app.elements['spectral-elevation'].textContent, '~42 m');
+  move({ lng: 0, lat: 0 }); app.updateSpectralConsole();
+  assert.equal(app.elements['spectral-elevation'].textContent, 'Sampling...');
+  app.workspaceView = 'workspace'; app.updateSpectralConsole();
+  assert.equal(app.elements['spectral-console'].hidden, true);
+});
+
+test('spectral controls reuse terrain, preferences and guarded history without inventing selections', async () => {
+  const { app, document, context } = spectralElements(setup());
+  const cameras = []; const terrains = []; const storage = new Map();
+  context.localStorage = { setItem: (key, value) => storage.set(key, value) };
+  app.workspaceReady = true; app.mapMode = 'spectral'; app.terrainEnabled = true;
+  const layers = [{ id: 'local-contours', type: 'line' }, { id: 'local-contour-labels', type: 'symbol' }, { id: 'local-hillshade', type: 'hillshade' }];
+  app.map = {
+    getCenter: () => ({ lng: 7.96, lat: 46.58 }), getZoom: () => 11.5, getPitch: () => 72, getBearing: () => -35,
+    getSource: () => ({}), getLayer: (id) => layers.find((layer) => layer.id === id), getStyle: () => ({ layers }),
+    setTerrain: (value) => terrains.push(value), easeTo: (value) => cameras.push(value), flyTo: (value) => cameras.push(value),
+    setLayoutProperty() {}, setPaintProperty() {},
+  };
+  app.applyMapMode = () => app.applyLayerPreferences();
+  app.bindSpectralUi();
+  const range = app.elements['terrain-exaggeration'];
+  assert.equal(range.min, '1'); assert.equal(range.max, '3'); assert.equal(range.step, '0.05');
+  range.value = '2.05'; await range.dispatch('input');
+  assert.equal(app.terrainExaggeration, 2.05); assert.equal(terrains.at(-1).exaggeration, 2.05);
+  assert.equal(cameras.length, 0, 'Exaggeration must preserve cinematic pitch');
+  assert.equal(JSON.parse(storage.get('meridian.explore.v1')).terrainExaggeration, 2.05);
+  assert.equal(app.elements['terrain-exaggeration-value'].textContent, '2.05x');
+  assert.equal(app.mapActions.at(-1).label, 'Terrain exaggeration');
+  await document.querySelector('[data-spectral-camera="cinematic"]').click();
+  assert.equal(cameras.at(-1).pitch, 72); assert.equal(cameras.at(-1).bearing, -35);
+  for (const [preset, center, zoom] of [['alps', [7.96, 46.58], 11.5], ['volcano', [-121.76, 46.85], 11], ['canyon', [-112.14, 36.1], 11]]) {
+    await document.querySelector(`[data-spectral-preset="${preset}"]`).click();
+    assert.deepEqual(Array.from(cameras.at(-1).center), center); assert.equal(cameras.at(-1).zoom, zoom);
+    assert.equal(app.selected, null);
+  }
+  await document.querySelector('[data-spectral-layer="labels"]').click();
+  assert.equal(app.layerPreferences.labels, false);
+  assert.equal(document.querySelector('[data-spectral-layer="labels"]').getAttribute('aria-pressed'), 'false');
+  const count = cameras.length; app.undoing = true;
+  await document.querySelector('[data-spectral-preset="alps"]').click();
+  await document.querySelector('[data-spectral-camera="overview"]').click();
+  range.value = '3'; await range.dispatch('input');
+  assert.equal(cameras.length, count); assert.equal(app.terrainExaggeration, 2.05); assert.equal(range.value, '2.05');
+});
+
+test('local spectral mode and contour commands are accepted without switching back to terrain', () => {
+  const { app } = setup();
+  assert.equal(app.applyLocalInstruction('Show spectral mode'), true);
+  assert.equal(app.mapMode, 'spectral');
+  assert.match(app.elements['agent-result-summary'].textContent, /Spectral/);
+  app.applyLocalInstruction('Hide contours'); app.applyLocalInstruction('Show hillshade');
+  assert.equal(app.mapMode, 'spectral'); assert.equal(app.layerPreferences.contours, false);
+});
+
+test('saved spectral view restores disabled 3D and exact camera without mode-entry pitch changes', async () => {
+  const { app, context } = setup();
+  const saved = { mapMode: 'spectral', terrainEnabled: false, terrainExaggeration: 2.25, camera: { center: [7.96, 46.58], zoom: 11.5, pitch: 0, bearing: 18 }, layerPreferences: { labels: false } };
+  const storage = new Map([['meridian.explore.v1', JSON.stringify(saved)]]);
+  context.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+  app.loadWorkspace = async () => {};
+  app.initializeLocationFromUrl = () => false;
+  app.applyTerrain = () => {};
+  app.applyMapMode = () => app.updateSpectralConsole();
+  let camera;
+  app.map = {
+    jumpTo: (value) => { camera = value; }, getCenter: () => ({ lng: 7.96, lat: 46.58 }),
+    getZoom: () => 11.5, getPitch: () => 0, getBearing: () => 18, getSource: () => null,
+  };
+  await app.bootstrap();
+  assert.equal(app.mapMode, 'spectral'); assert.equal(app.terrainEnabled, false);
+  assert.equal(app.terrainExaggeration, 2.25); assert.equal(app.layerPreferences.labels, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(camera)), saved.camera);
+  assert.equal(JSON.parse(storage.get('meridian.explore.v1')).mapMode, 'spectral');
+});
+
+test('spectral terrain clicks sample true sea level and reject results after leaving spectral', async () => {
+  const { app, window } = setup();
+  app.mapMode = 'spectral'; app.map = { getZoom: () => 11 };
+  window.maplibregl = { Popup: class {
+    setLngLat(value) { this.coordinates = value; return this; }
+    setDOMContent(value) { this.content = value; return this; }
+    addTo() { return this; }
+    on(type, callback) { this.close = callback; }
+    remove() { this.close?.(); }
+  } };
+  app.contourDem = { getDemTile: async () => ({ width: 1, height: 1, data: new Float32Array([0]) }) };
+  await app.inspectTerrainPoint({ lngLat: { lng: 7.96, lat: 46.58 } });
+  assert.match(app.terrainPointPopup.content.children[1].textContent, /Approximately 0 m.*unexaggerated/);
+  assert.equal(app.selected, null);
+  let finish;
+  app.contourDem.getDemTile = () => new Promise((resolve) => { finish = resolve; });
+  const work = app.inspectTerrainPoint({ lngLat: { lng: 0, lat: 0 } });
+  const popup = app.terrainPointPopup;
+  app.mapMode = 'route';
+  finish({ width: 1, height: 1, data: new Float32Array([8000]) });
+  await work;
+  assert.equal(popup.content.children[1].textContent, 'Sampling elevation...');
 });
 
 test('building cards lead with height, retain expandable provenance, and reject missing floor ranges', () => {
@@ -1080,13 +1291,14 @@ test('satellite cache declines stale fallback while DEM caching remains compatib
 test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite view', () => {
   const { app, context, window } = setup();
   let options;
+  const handlers = new Map();
   context.ResizeObserver = class { observe() {} };
   context.requestAnimationFrame = () => 1;
   context.localStorage = { setItem() {} };
   window.maplibregl = {
     Map: class {
       constructor(value) { options = value; }
-      addControl() {} on() {}
+      addControl() {} on(type, callback) { if (typeof callback === 'function') handlers.set(type, callback); }
       getContainer() { return { querySelector: () => ({}) }; }
     }, AttributionControl: class {}, ScaleControl: class {},
   };
@@ -1095,6 +1307,19 @@ test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite
   assert.equal(options.canvasContextAttributes.antialias, true);
   assert.equal(options.pitch, 0);
   assert.equal(options.antialias, undefined);
+  app.showMapNotice = () => assert.fail('Elevation failures must not show a main map notice');
+  const notice = app.elements['map-notice'];
+  const originalNotice = notice.textContent;
+  const originalClass = notice.className;
+  for (const source of ['local-contour-source', 'local-terrain-dem', 'local-spectral-elevation']) {
+    handlers.get('error')({ sourceId: source });
+  }
+  handlers.get('error')({ error: { sourceId: 'local-spectral-elevation' } });
+  assert.equal(app.elements['terrain-data-status'].hidden, false);
+  assert.match(app.elements['terrain-data-status'].textContent, /Some elevation data is unavailable/);
+  assert.equal(notice.textContent, originalNotice);
+  assert.equal(notice.className, originalClass);
+  assert.equal(app.elements['info-drawer-content'].hidden, true);
   app.setMapMode = Object.getPrototypeOf(app).setMapMode;
   app.applyMapMode = () => {};
   app.setMapMode('satellite');
@@ -1102,6 +1327,7 @@ test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite
   app.terrainEnabled = true;
   app.setMapMode('terrain');
   assert.equal(app.terrainEnabled, true);
+  assert.match(app.elements['terrain-data-status'].textContent, /Contour library unavailable/);
 });
 
 test('regional imagery is gated by the entire viewport, native zoom, pitch, and explicit preference', () => {
@@ -1283,7 +1509,168 @@ test('server undo blocks new commands and preserves edits that arrive while awai
   assert.equal(app.geo.pins.length, 2);
   assert.equal(app.mapActions.length, 0);
   assert.equal(app.undoing, false);
+  assert.equal(app.redoMapActions.length, 0);
+  assert.equal(app.elements['action-history-redo'].disabled, true);
   assert.match(app.elements['geo-status'].textContent, /Newer local map changes were kept/);
+});
+
+test('history controls stay visible, compact and disabled when empty or busy', () => {
+  const { app } = setup();
+  app.bindUi();
+  const el = app.elements;
+  assert.equal(el['action-history-chip'].hidden, false);
+  assert.equal(el['action-history-label'].classList.contains('sr-only'), true);
+  assert.equal(el['action-history-undo'].disabled, true);
+  assert.equal(el['action-history-redo'].disabled, true);
+  const before = app.captureMapAction();
+  app.theme = 'light';
+  app.recordMapAction('Light theme', before);
+  assert.equal(el['action-history-undo'].disabled, false);
+  assert.equal(el['action-history-label'].textContent, 'Light theme');
+  for (const busy of ['agentSubmitting', 'agentRunId', 'undoing']) {
+    app[busy] = true;
+    app.updateActionChip();
+    assert.equal(el['action-history-undo'].disabled, true);
+    assert.equal(el['action-history-redo'].disabled, true);
+    app[busy] = false;
+  }
+});
+
+test('client-only snapshots support repeated undo and redo with overlays and no server requests', async () => {
+  const { app, api, add, requests } = overlaySetup();
+  api.addLayer(add.layer);
+  api.styleLayer('city', { color: 'blue' });
+  await app.undoMapAction();
+  assert.equal(api.getLayers()[0].style.color, '#ff0000');
+  await app.undoMapAction();
+  assert.equal(api.getLayers().length, 0);
+  assert.equal(app.redoMapActions.length, 2);
+  assert.equal(app.elements['action-history-redo'].disabled, false);
+  for (const busy of ['agentSubmitting', 'agentRunId', 'undoing']) {
+    app[busy] = true;
+    app.updateActionChip();
+    assert.equal(app.elements['action-history-redo'].disabled, true);
+    await app.redoMapAction();
+    assert.equal(api.getLayers().length, 0);
+    assert.equal(app.redoMapActions.length, 2);
+    app[busy] = false;
+  }
+  await app.redoMapAction();
+  assert.equal(api.getLayers()[0].style.color, '#ff0000');
+  await app.redoMapAction();
+  assert.equal(api.getLayers()[0].style.color, '#0000ff');
+  assert.equal(app.redoMapActions.length, 0);
+  await app.undoMapAction();
+  await app.redoMapAction();
+  assert.equal(api.getLayers()[0].style.color, '#0000ff');
+  assert.equal(requests.length, 0);
+});
+
+test('redo snapshots capture the state immediately before undo and preserve later manual camera moves', async () => {
+  const { app, api, add } = overlaySetup();
+  api.addLayer(add.layer);
+  app.map.jumpTo({ center: [10, 20], zoom: 9, bearing: 12, pitch: 30 });
+  app.cameraInteractionRevision = 1;
+  await app.undoMapAction();
+  assert.equal(JSON.stringify(app.redoMapActions[0].after.camera.center), '[10,20]');
+  assert.equal(app.map.getCenter().lng, 10);
+  app.map.jumpTo({ center: [30, 40], zoom: 10, bearing: 25, pitch: 45 });
+  app.cameraInteractionRevision = 2;
+  await app.redoMapAction();
+  assert.equal(api.getLayers().length, 1);
+  assert.equal(app.map.getCenter().lng, 30);
+  assert.equal(app.map.getPitch(), 45);
+  await app.undoMapAction();
+  assert.equal(app.map.getCenter().lng, 30);
+});
+
+test('redo refuses intervening manual edits and fresh actions invalidate the redo branch', async () => {
+  const { app, api, add } = overlaySetup();
+  api.addLayer(add.layer);
+  await app.undoMapAction();
+  app.geo.pins.push(place('Keep manual pin'));
+  app.updateActionChip();
+  assert.equal(app.elements['action-history-redo'].disabled, true);
+  await app.redoMapAction();
+  assert.equal(api.getLayers().length, 0);
+  assert.equal(app.geo.pins[0].name, 'Keep manual pin');
+  assert.match(app.elements['geo-status'].textContent, /cannot overwrite/);
+  api.addLayer({ ...add.layer, id: 'fresh' });
+  assert.equal(app.redoMapActions.length, 0);
+  assert.equal(app.elements['action-history-redo'].disabled, true);
+});
+
+test('server-only undo never enables client redo and failed undo keeps history', async () => {
+  for (const success of [false, true]) {
+    const { app, requests } = researchSetup();
+    const before = app.captureMapAction();
+    app.geo.pins.push(place('Server pin'));
+    app.recordMapAction('Server pin', before, { serverUndo: true, runId: 'finished-run' });
+    const work = app.undoMapAction();
+    respond(requests[0], { undone: success });
+    await work;
+    assert.equal(app.mapActions.length, success ? 0 : 1);
+    assert.equal(app.redoMapActions?.length || 0, 0);
+    assert.equal(app.elements['action-history-redo'].disabled, true);
+    await app.redoMapAction();
+    assert.equal(requests.length, 1);
+    assert.match(app.elements['geo-status'].textContent, /Server operations cannot be redone/);
+  }
+});
+
+test('failed redo rolls back partial changes and keeps its entry available', async () => {
+  const { app, api, add } = overlaySetup();
+  api.addLayer(add.layer);
+  await app.undoMapAction();
+  const restore = app.restoreMapAction.bind(app);
+  let fail = true;
+  app.restoreMapAction = (snapshot) => {
+    restore(snapshot);
+    if (fail) { fail = false; throw new Error('Injected rendering failure'); }
+  };
+  await app.redoMapAction();
+  assert.equal(api.getLayers().length, 0);
+  assert.equal(app.mapActions.length, 0);
+  assert.equal(app.redoMapActions.length, 1);
+  assert.equal(app.undoing, false);
+  assert.match(app.elements['geo-status'].textContent, /Redo was not applied/);
+  await app.redoMapAction();
+  assert.equal(api.getLayers().length, 1);
+});
+
+test('redo binds to its button, local command and shortcuts without hijacking editors or dialogs', async () => {
+  const { app, context } = setup();
+  let calls = 0;
+  app.redoMapAction = () => { calls++; };
+  app.bindUi();
+  await app.elements['action-history-redo'].click();
+  assert.equal(app.applyLocalInstruction('Redo.'), true);
+  for (const keys of [{ key: 'Z', ctrlKey: true, shiftKey: true }, { key: 'y', ctrlKey: true }, { key: 'z', metaKey: true, shiftKey: true }]) {
+    const shortcut = { ...event(keys.key), ...keys };
+    app.handleShortcut(shortcut);
+    assert.equal(shortcut.prevented, true);
+  }
+  assert.equal(calls, 5);
+  const dialog = new Element('dialog', { open: '' });
+  const button = new Element('button'); dialog.append(button);
+  for (const target of [new context.HTMLInputElement(), new context.HTMLTextAreaElement(), new Element('select'), { isContentEditable: true }, button]) {
+    const shortcut = { ...event('y'), ctrlKey: true, target };
+    app.handleShortcut(shortcut);
+    assert.equal(shortcut.prevented, false);
+  }
+  assert.equal(calls, 5);
+});
+
+test('map mode and layer buttons synchronize before the map style loads', () => {
+  const { app, document } = setup();
+  app.mapMode = 'spectral';
+  app.layerPreferences.contours = false;
+  app.map = { isStyleLoaded: () => false, getStyle: () => ({ layers: [{ id: 'building', type: 'fill' }] }), setLayoutProperty: () => assert.fail('Do not mutate the loading style') };
+  app.bindUi();
+  for (const button of document.querySelectorAll('button[data-map-mode]')) assert.equal(button.getAttribute('aria-pressed'), String(button.dataset.mapMode === 'spectral'));
+  assert.equal(document.querySelector('[data-layer-toggle="buildings"]').disabled, true);
+  assert.equal(document.querySelector('[data-layer-toggle="contours"]').getAttribute('aria-pressed'), 'false');
+  assert.equal(document.querySelector('[data-spectral-layer="contours"]').getAttribute('aria-pressed'), 'false');
 });
 
 test('normal-motion terrain commands retain guarded undo without an operator workspace', async () => {

@@ -42,7 +42,6 @@
 }
 :root:has(#search-status:not(.is-hidden)) { --search-feedback-height: 52px; }
 :root:has(.map-task-chip:not([hidden])) { --activity-height: 52px; }
-:root:has(#agent-task-chip:not([hidden])):has(#action-history-chip:not([hidden])) { --activity-height: 104px; }
 :root:has(.research-area-label:not([hidden])) { --research-height: 76px; }
 * { box-sizing: border-box; }
 html, body, .app-shell { width: 100%; height: 100%; margin: 0; overflow: hidden; }
@@ -249,7 +248,7 @@ svg { flex-shrink: 0; width: 20px; height: 20px; }
 .manual-toggle[aria-expanded="true"] b { transform: rotate(180deg); }
 .panel-icon { width: 12px; height: 12px; border: 1px solid var(--muted); border-radius: 2px; background: linear-gradient(90deg, transparent 35%, var(--muted) 35%, var(--muted) 43%, transparent 43%); }
 .map-modes { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-elevated); }
-.map-modes button { flex: 1; display: flex; justify-content: center; align-items: center; gap: 5px; min-width: 0; min-height: 40px; padding: 0 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; }
+.map-modes button { flex: 1; display: flex; justify-content: center; align-items: center; gap: 4px; min-width: 0; min-height: 40px; padding: 0 4px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 11px; }
 .map-modes button[aria-pressed="true"] { color: var(--accent); background: var(--surface-solid); box-shadow: inset 0 0 0 1px var(--line); }
 .map-modes button:hover { color: var(--ink); }
 .map-modes svg { width: 14px; height: 14px; }
@@ -284,6 +283,7 @@ svg { flex-shrink: 0; width: 20px; height: 20px; }
 :root[data-workspace-view="routes"] .explore-context,
 :root[data-workspace-view="workspace"] .explore-context,
 :root[data-map-mode="terrain"] .explore-context,
+:root[data-map-mode="spectral"] .explore-context,
 :root[data-workspace-view="explore"] .context-back,
 :root:not([data-workspace-view="explore"]) .explore-utilities,
 :root:not([data-workspace-view="explore"]) .terrain-context,
@@ -510,9 +510,123 @@ dialog p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 
 :root[data-view-mode="true"] .view-mode-slash { display: block; }
 :root[data-theme="light"]:is([data-map-mode="terrain"], [data-map-mode="route"]) .brand { color: var(--ink); text-shadow: none; }
 
+/* Spectral is an instrument over the live map, not a replacement scene. */
+:root[data-map-mode="spectral"] {
+  --surface: rgba(16, 29, 31, .82);
+  --surface-solid: #101d1f;
+  --surface-elevated: #1b2c2d;
+  --ink: #e5f1ee;
+  --muted: #8ea8a5;
+  --line: rgba(170, 222, 213, .13);
+  --accent: #83e1ce;
+  --accent-ink: #0a2e29;
+  --control: rgba(171, 222, 215, .07);
+  color-scheme: dark;
+}
+:root[data-map-mode="spectral"] .map-canvas { background: #09191d; }
+:root[data-map-mode="spectral"] .map-canvas::after { height: 230px; background: linear-gradient(rgba(6, 17, 20, .8), transparent); }
+:root[data-map-mode="spectral"] :is(.search-form, .manual-sidebar, .icon-button, .view-heading) { backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); }
+:root[data-map-mode="spectral"] .brand-tagline { color: #98c2b8; }
+:root[data-map-mode="spectral"] .brand-mark { filter: saturate(.5); }
+:root[data-map-mode="spectral"] .map-modes button[data-map-mode="spectral"][aria-pressed="true"] { background: linear-gradient(135deg, rgba(84, 168, 156, .25), rgba(63, 104, 108, .12)); box-shadow: inset 0 0 0 1px rgba(131, 225, 206, .2); }
+:root[data-map-mode="spectral"] .manual-sidebar { max-height: calc(100dvh - var(--rail-top) - 132px); }
+:root[data-map-mode="spectral"][data-workspace-view="explore"] .view-heading { display: none; }
+:root[data-map-mode="spectral"] .info-drawer { bottom: calc(100px + env(safe-area-inset-bottom)); }
+:root[data-map-mode="spectral"] .map-feedback-stack { bottom: calc(100px + env(safe-area-inset-bottom)); }
+:root[data-map-mode="spectral"] :is(.map-status, .map-notice) { bottom: calc(158px + env(safe-area-inset-bottom)); }
+.spectral-console { position: absolute; inset: 0; z-index: 5; color: var(--ink); pointer-events: none; }
+.spectral-scene-label { position: absolute; top: 112px; right: 26px; display: flex; align-items: center; gap: 9px; font: 9px var(--mono); letter-spacing: .03em; color: #b4cfca; text-shadow: 0 2px 8px #08181b; }
+.spectral-live-dot { width: 5px; height: 5px; border-radius: 50%; background: #8be3bb; box-shadow: 0 0 10px #72cda4; }
+.spectral-scene-divider { width: 1px; height: 12px; background: rgba(181, 216, 210, .25); }
+.spectral-location-card { position: absolute; top: 290px; left: var(--gutter); max-width: 360px; text-shadow: 0 2px 18px #061316; transition: opacity 180ms ease; }
+.spectral-eyebrow { color: #b9d4ce; font: 9px var(--mono); letter-spacing: .18em; text-transform: uppercase; }
+.spectral-location-card h2 { margin: 12px 0 8px; font-size: clamp(24px, 2.5vw, 38px); font-weight: 300; letter-spacing: -.055em; line-height: 1.2; }
+.spectral-location-card p { margin: 0; font: 10px var(--mono); color: #a1bfb8; line-height: 1.7; }
+.spectral-location-note { display: block; margin-top: 18px; font-size: 10px; color: #95b1ac; }
+:root[data-sidebar="open"] .spectral-location-card { opacity: 0; }
+.spectral-reticle { position: absolute; top: 47%; left: 55%; width: 24px; height: 24px; opacity: .65; }
+.spectral-reticle i { position: absolute; width: 7px; height: 7px; border-color: #d5efdf; border-style: solid; }
+.spectral-reticle i:nth-child(1) { top: 0; left: 0; border-width: 1px 0 0 1px; }
+.spectral-reticle i:nth-child(2) { top: 0; right: 0; border-width: 1px 1px 0 0; }
+.spectral-reticle i:nth-child(3) { bottom: 0; left: 0; border-width: 0 0 1px 1px; }
+.spectral-reticle i:nth-child(4) { bottom: 0; right: 0; border-width: 0 1px 1px 0; }
+.spectral-deck { position: absolute; right: var(--gutter); bottom: calc(48px + env(safe-area-inset-bottom)); left: var(--gutter); display: grid; grid-template-columns: 1.05fr 1.25fr 1fr; gap: 8px; pointer-events: auto; }
+.spectral-panel { min-width: 0; padding: 16px 18px; border: 1px solid rgba(180, 224, 210, .12); border-radius: 17px; background: linear-gradient(130deg, rgba(48, 66, 61, .74), rgba(13, 29, 33, .92)); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); box-shadow: inset 0 1px 0 rgba(226, 251, 226, .04), 0 12px 36px rgba(0, 8, 12, .18); }
+.spectral-field-panel { background: linear-gradient(125deg, rgba(79, 59, 49, .78), rgba(24, 45, 40, .87)); }
+.spectral-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.spectral-panel-heading h3 { margin: 0; font-size: 11px; font-weight: 500; }
+.spectral-badge { padding: 5px 8px; border: 1px solid rgba(187, 215, 186, .14); border-radius: 20px; color: #b5c9ba; font-size: 8px; }
+.spectral-panel-number { color: #8ca6a2; font: 8px var(--mono); letter-spacing: .05em; }
+.spectral-field-body { display: flex; align-items: center; gap: 18px; min-height: 112px; }
+.spectral-topography { position: relative; flex: 0 0 115px; height: 102px; }
+.spectral-topography svg { width: 100%; height: 100%; overflow: visible; stroke: #e1ac87; stroke-width: .65; filter: drop-shadow(0 0 7px rgba(240, 143, 103, .35)); }
+.spectral-topography path:first-child { fill: rgba(224, 119, 87, .07); }
+.spectral-topography circle { fill: #e8c298; stroke: none; }
+.spectral-topography > span { position: absolute; top: -4px; left: 56%; color: #b5b9a7; font: 7px var(--mono); }
+.spectral-elevation-readout { display: grid; gap: 9px; }
+.spectral-elevation-readout > span { color: #b1c0b5; font-size: 9px; }
+.spectral-elevation-readout strong { font: 27px var(--mono); font-weight: 400; letter-spacing: -.06em; }
+.spectral-elevation-readout small { color: #93aaa0; font-size: 8px; line-height: 1.6; }
+.spectral-altitude-ramp { height: 4px; margin: 12px 0 8px; border-radius: 2px; background: linear-gradient(90deg, #123e44 0%, #197b80 4.17%, #42cec5 12.5%, #a8cd85 25%, #efb478 41.67%, #ed7969 66.67%, #e0f4f3 100%); }
+.spectral-ramp-labels { display: flex; justify-content: space-between; gap: 6px; color: #a6b7ac; font: 8px var(--mono); }
+.spectral-render-body { display: grid; gap: 9px; }
+.spectral-camera-controls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.spectral-camera-controls button { display: grid; justify-items: center; align-content: center; gap: 10px; min-height: 72px; padding: 10px 5px; border: 1px solid rgba(190, 219, 210, .07); border-radius: 11px; background: rgba(153, 190, 170, .06); font-size: 9px; color: #b0c6bf; }
+.spectral-camera-controls button[aria-pressed="true"] { color: #d4f1df; border-color: rgba(172, 228, 191, .28); background: linear-gradient(140deg, rgba(138, 183, 139, .2), rgba(100, 160, 146, .08)); box-shadow: inset 0 1px 9px rgba(198, 223, 170, .04); }
+.spectral-camera-controls svg { width: 18px; height: 18px; }
+.spectral-layer-controls { display: flex; gap: 6px; }
+.spectral-layer-controls button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 0 6px; border-radius: 20px; background: rgba(126, 161, 151, .06); color: #8fa9a2; font-size: 9px; }
+.spectral-layer-controls i { width: 5px; height: 5px; border-radius: 50%; background: #586c69; }
+.spectral-layer-controls button[aria-pressed="true"] { color: #bad7ca; }
+.spectral-layer-controls button[aria-pressed="true"] i { background: #9ed0a3; box-shadow: 0 0 7px rgba(158, 208, 163, .25); }
+.spectral-relief-slider { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; color: #9eb5ac; font-size: 9px; }
+.spectral-relief-slider output { color: #cae1d1; font: 10px var(--mono); }
+.spectral-relief-slider input { grid-column: 1 / -1; width: 100%; height: 20px; margin: 0; cursor: pointer; }
+.spectral-telemetry { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.spectral-telemetry > div { display: grid; gap: 13px; min-width: 0; padding: 12px 10px; border: 1px solid rgba(163, 204, 196, .07); border-radius: 10px; background: rgba(94, 135, 132, .07); }
+.spectral-telemetry span { color: #8da9a3; font-size: 8px; }
+.spectral-telemetry strong { font: 18px var(--mono); font-weight: 400; color: #c8ded7; }
+.spectral-destinations { margin-top: 15px; }
+.spectral-destinations > span { font-size: 8px; color: #8da9a3; }
+.spectral-destinations > div { display: flex; gap: 5px; margin-top: 7px; }
+.spectral-destinations button { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 40px; padding: 0 9px; border-radius: 8px; background: rgba(119, 166, 155, .07); color: #bad2c9; font-size: 9px; }
+.spectral-destinations button span { color: #84aea0; }
+.spectral-deck button:hover { background: rgba(157, 203, 180, .16); color: #e2f7eb; }
+.spectral-footnote { position: absolute; bottom: calc(27px + env(safe-area-inset-bottom)); left: var(--gutter); right: var(--gutter); display: flex; justify-content: space-between; gap: 12px; margin: 0; font: 8px var(--mono); color: #8ba9a2; text-shadow: 0 1px 6px #06191c; }
+.spectral-footnote > :first-child { letter-spacing: .14em; }
+:root[data-map-mode="spectral"] .elevation-ramp { background: linear-gradient(90deg, #123e44, #42cec5, #a8cd85, #efb478, #ed7969, #e0f4f3); }
+.spectral-location-card, .spectral-scene-label, .spectral-reticle, .spectral-footnote { display: none; }
+.spectral-settings { position: absolute; right: var(--gutter); bottom: calc(40px + env(safe-area-inset-bottom)); width: min(420px, calc(100vw - 48px)); pointer-events: auto; }
+.spectral-settings > summary { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); color: #b9d1c9; font-size: 11px; cursor: pointer; list-style: none; box-shadow: var(--shadow); }
+.spectral-settings > summary::-webkit-details-marker { display: none; }
+.spectral-settings > summary svg { width: 16px; height: 16px; }
+.spectral-settings > summary strong { margin-left: auto; font: 11px var(--mono); font-weight: 400; }
+.spectral-settings-chevron { font-size: 16px; transition: transform 150ms ease; }
+.spectral-settings[open] .spectral-settings-chevron { transform: rotate(180deg); }
+.spectral-settings .spectral-deck { position: static; display: flex; flex-direction: column; gap: 8px; max-height: min(570px, calc(100dvh - 220px)); margin-top: 8px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.spectral-settings .spectral-field-panel { display: none; }
+.spectral-settings .spectral-panel { padding: 14px 16px; flex: none; min-height: 0; }
+.spectral-settings .spectral-telemetry { display: flex; gap: 24px; }
+.spectral-settings .spectral-telemetry > div { display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0; background: none; }
+.spectral-settings .spectral-telemetry strong { font-size: 12px; }
+.map-history-controls { position: absolute; z-index: 21; left: max(var(--gutter), env(safe-area-inset-left)); bottom: calc(40px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 3px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); box-shadow: var(--shadow); }
+.map-history-controls button { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border-radius: 8px; background: none; color: var(--ink); }
+.map-history-controls button:hover:not(:disabled) { background: var(--control); color: var(--accent); }
+.map-history-controls button:disabled { opacity: .3; }
+.map-history-controls svg { width: 17px; height: 17px; }
+.terrain-data-status { margin-top: 12px !important; padding-top: 12px; border-top: 1px solid var(--line); }
+:root[data-map-mode="spectral"] .manual-toggle { min-height: 40px; font-size: 11px; }
+:root[data-map-mode="spectral"] .manual-sidebar { width: 320px; padding: 4px 12px 8px; }
+:root[data-map-mode="spectral"] .map-controls { margin-top: 4px; }
+:root[data-map-mode="spectral"] .map-controls button { height: 36px; min-height: 36px; }
 @media (max-width: 1180px) and (min-width: 901px) {
   :root { --search-top: calc(88px + env(safe-area-inset-top)); }
   .floating-search { left: calc(var(--sidebar-width) + var(--gutter) * 2); width: min(600px, calc(100vw - var(--sidebar-width) - var(--gutter) * 3)); }
+  .spectral-scene-label { top: 166px; }
+  .spectral-location-card { left: calc(var(--sidebar-width) + var(--gutter) * 2); top: 220px; max-width: 320px; }
+  .spectral-panel { padding: 14px; }
+  .spectral-field-body { gap: 10px; }
+  .spectral-topography { flex-basis: 82px; }
 }
 @media (max-width: 900px) {
   :root { --gutter: 16px; --search-top: calc(84px + env(safe-area-inset-top)); --sheet-bottom: calc(64px + var(--attribution-height, 24px) + var(--activity-height) + var(--research-height) + env(safe-area-inset-bottom)); }
@@ -567,6 +681,34 @@ dialog p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 
   .maplibregl-popup.mono-popup .maplibregl-popup-content { width: 100%; max-height: max(120px, min(52dvh, calc(100dvh - var(--rail-top) - var(--sheet-bottom) - 64px))); }
   .maplibregl-ctrl-attrib { font-size: 7px !important; }
   .maplibregl-ctrl-bottom-right { max-width: calc(100% - 115px); }
+  :root[data-map-mode="spectral"] .manual-sidebar { bottom: calc(204px + var(--activity-height) + var(--research-height) + env(safe-area-inset-bottom)); max-height: max(120px, min(40dvh, calc(100dvh - var(--rail-top) - 250px))); width: auto; }
+  :root[data-map-mode="spectral"] .info-drawer { bottom: calc(148px + env(safe-area-inset-bottom)); }
+  :root[data-map-mode="spectral"] .map-feedback-stack { bottom: calc(204px + env(safe-area-inset-bottom)); }
+  :root[data-map-mode="spectral"] .map-modes button { font-size: 10px; }
+  .spectral-scene-label { top: calc(164px + env(safe-area-inset-top)); right: var(--gutter); font-size: 8px; }
+  .spectral-location-card { top: calc(207px + env(safe-area-inset-top)); max-width: calc(100vw - 32px); }
+  .spectral-location-card h2 { font-size: 27px; margin-top: 8px; }
+  .spectral-location-note { display: none; }
+  .spectral-reticle { top: 39%; left: 65%; }
+  .spectral-deck { display: flex; gap: 8px; bottom: calc(60px + env(safe-area-inset-bottom)); padding-bottom: 5px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: thin; scrollbar-color: rgba(141, 201, 180, .3) transparent; }
+  .spectral-panel { flex: 0 0 min(310px, calc(100vw - 48px)); min-height: 218px; padding: 14px; scroll-snap-align: start; }
+  .spectral-camera-controls button { min-height: 68px; }
+  .spectral-layer-controls button { min-height: 40px; }
+  .spectral-relief-slider input { height: 26px; }
+  .spectral-destinations button { min-height: 44px; }
+  .spectral-footnote { bottom: calc(43px + env(safe-area-inset-bottom)); font-size: 7px; }
+  .spectral-footnote > :last-child { display: none; }
+  :root:is([data-search-active="true"], [data-terrain-point="true"], [data-map-details="true"]) .spectral-console,
+  :root:has(.floating-search .agent-panel:not([hidden])) .spectral-console { visibility: hidden; }
+  .spectral-settings { right: var(--gutter); bottom: calc(80px + env(safe-area-inset-bottom)); width: calc(100vw - 140px); }
+  .spectral-settings > summary { min-height: 48px; padding: 0 10px; gap: 7px; font-size: 10px; }
+  .spectral-settings > summary strong { font-size: 9px; }
+  .spectral-settings[open] { width: calc(100vw - var(--gutter) * 2); bottom: calc(100px + env(safe-area-inset-bottom)); }
+  .spectral-settings .spectral-deck { max-height: min(45dvh, calc(100dvh - 260px)); overflow-x: hidden; scroll-snap-type: none; padding-bottom: 0; }
+  :root:has(.spectral-settings[open]) :is(.manual-sidebar, .info-drawer, .map-feedback-stack) { visibility: hidden; }
+  .map-history-controls button { width: 44px; height: 44px; }
+  .map-history-controls { bottom: calc(80px + env(safe-area-inset-bottom)); }
+  :root[data-map-mode="spectral"] .map-controls button { height: 44px; min-height: 44px; }
 }
 @media (max-width: 380px) {
   :root { --gutter: 12px; }
@@ -581,9 +723,19 @@ dialog p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 
   .manual-sidebar { max-height: calc(100dvh - var(--rail-top) - 44px); }
   .agent-panel, .search-discovery { max-height: calc(100dvh - var(--search-top) - 96px); }
   .info-drawer-content { max-height: calc(100dvh - var(--search-top) - 128px); }
+  :root[data-map-mode="spectral"] .manual-sidebar { max-height: calc(100dvh - var(--rail-top) - 100px); }
+  .spectral-location-card { display: none; }
+  .spectral-panel { padding: 10px 14px; }
+  .spectral-panel-heading { margin-bottom: 8px; }
+  .spectral-field-body { min-height: 80px; }
+  .spectral-topography { height: 75px; }
+  .spectral-camera-controls button { min-height: 52px; gap: 6px; }
+  .spectral-telemetry > div { padding: 9px; gap: 8px; }
+  .spectral-deck { bottom: 40px; }
 }
 @media (prefers-reduced-transparency: reduce) {
   :root { --surface: var(--surface-solid); --hud: var(--surface-solid); }
+  .spectral-panel { background: #182d2c; backdrop-filter: none; -webkit-backdrop-filter: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }

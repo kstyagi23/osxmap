@@ -6,8 +6,8 @@ import threading
 from dataclasses import replace
 from unittest import mock
 
-from backend.agent import MapAgentService
-from backend.agent_tools import AgentTools
+from backend.agent import MapAgentService, SYSTEM_PROMPT
+from backend.agent_tools import AGENT_TOOL_SCHEMAS, AgentTools
 from backend.errors import ServiceError
 from backend.map_actions import color, style
 from backend.test_agent_studio import BackendCase, studio_context, tool_call
@@ -172,6 +172,43 @@ class MapActionAgentTests(BackendCase):
         ):
             self.assertTrue(self.tools.execute(context, "map_action", arguments)["queued"])
         self.assertEqual(context.highlight_actions, 0)
+
+    def test_basemap_schema_docs_and_actions_support_four_modes(self):
+        schema = next(tool["function"]["parameters"] for tool in AGENT_TOOL_SCHEMAS if tool["function"]["name"] == "map_action")
+        modes = ["streets", "satellite", "terrain", "spectral"]
+        self.assertEqual(schema["properties"]["mode"], {"type": "string", "enum": modes})
+        self.assertIn("set_basemap(mode:streets|satellite|terrain|spectral)", SYSTEM_PROMPT)
+        context = self.tools.new_context({})
+        for mode in modes:
+            with self.subTest(mode=mode):
+                arguments = {"action": "set_basemap", "mode": mode}
+                result = self.tools.execute(context, "map_action", arguments)
+                self.assertTrue(result["queued"])
+                self.assertEqual(result["mapUpdate"], {"actions": [arguments]})
+        self.assertEqual(context.highlight_actions, 0)
+        self.assertEqual(context.visual_actions, 0)
+        self.assertFalse(context.overlays)
+
+    def test_basemap_invalid_modes_missing_mode_and_extra_keys_are_rejected(self):
+        context = self.tools.new_context({})
+        invalid = [{"action": "set_basemap"}, {"action": "set_basemap", "mode": "spectral", "style": {"color": "red"}}]
+        invalid.extend({"action": "set_basemap", "mode": mode} for mode in (None, True, 1, "", "route", "Spectral", " spectral ", "https://remote/style.json"))
+        for arguments in invalid:
+            with self.subTest(arguments=arguments), self.assertRaises(ServiceError) as caught:
+                self.tools.execute(context, "map_action", arguments)
+            self.assertEqual(caught.exception.status, 400)
+        self.assertFalse(context.presented)
+        self.assertFalse(context.overlays)
+
+    def test_agent_queues_spectral_basemap_without_geometry_acquisition(self):
+        arguments = {"action": "set_basemap", "mode": "spectral"}
+        service, hub, _ = self.service([tool_call("map_action", arguments), {"content": "Spectral basemap selected."}])
+        terminal = hub.wait(service.start_run(hub.session, "Switch the basemap to spectral", {}))
+        self.assertEqual(terminal["type"], "agent.completed")
+        updates = [event["update"] for _, event in hub.events if event["type"] == "agent.map"]
+        self.assertEqual(updates, [{"actions": [arguments]}])
+        self.load_boundary.assert_not_called()
+        self.load_roads.assert_not_called()
 
     def test_retired_studio_style_visibility_order_and_remove_are_rejected(self):
         context = self.tools.new_context(studio_context())

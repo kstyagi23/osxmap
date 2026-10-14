@@ -401,6 +401,33 @@ test('the public singleton facade exposes every requested method and uses the sa
   assert(app.history.length > 0);
 });
 
+test('basemap actions accept four modes through the dispatcher and public API while preserving the streets alias', () => {
+  const { registry, api, app } = fixture();
+  for (const mode of ['streets', 'satellite', 'terrain', 'spectral']) {
+    const expected = mode === 'streets' ? 'route' : mode;
+    assert.equal(registry.execute({ action: 'set_basemap', mode }, { fromAgent: true }).applied, true);
+    assert.equal(app.mapMode, expected);
+    assert.equal(api.setBasemap(mode).applied, true);
+    assert.equal(app.mapMode, expected);
+  }
+});
+
+test('basemap validation rejects invalid modes and extra keys atomically and still requires a control', () => {
+  const { registry, api, app } = fixture();
+  assert.equal(api.setBasemap('spectral').applied, true);
+  const historyCount = app.history.length;
+  for (const mode of [undefined, null, true, 1, '', 'route', 'Spectral', ' spectral ', 'https://remote/style.json', ['spectral'], { mode: 'spectral' }]) {
+    const result = registry.execute([{ action: 'set_basemap', mode: 'streets' }, { action: 'set_basemap', mode }]);
+    assert.equal(result.applied, false);
+    assert.match(result.reason, /Basemap mode must be streets, satellite, terrain or spectral/);
+    assert.equal(app.mapMode, 'spectral');
+    assert.equal(app.history.length, historyCount);
+  }
+  assert.equal(registry.execute({ action: 'set_basemap', mode: 'spectral', style: {} }).applied, false);
+  app.setMapMode = undefined;
+  assert.deepEqual(api.setBasemap('spectral'), { applied: false, reason: 'Basemap control is unavailable.' });
+});
+
 test('geodesic circles use explicit radius meters and split the dateline rather than fabricating a bbox', () => {
   const { api } = fixture();
   assert.equal(api.drawCircle([77.36, 28.56], 1000, { id: 'circle' }).applied, true);

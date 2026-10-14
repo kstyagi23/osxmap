@@ -1,5 +1,6 @@
 import { AGENT_SOCKET_URL, API_BASE_URL, apiPath } from './config.js';
 import { MeridianMapActions, MAP_ACTION_NAMES } from './map-actions.js';
+import { registerSpectralTerrain } from './spectral-terrain.js';
 
 const TILE_ZOOM = 14;
 const ACCENT = '#d0dac5';
@@ -376,37 +377,40 @@ function applyMonochrome(map, theme, mode = 'route') {
   const dark = theme === 'dark' || mode !== 'terrain';
   const satellite = mode === 'satellite';
   const terrain = mode === 'terrain';
+  const spectral = mode === 'spectral';
   const colors = dark
     ? { background: '#141918', land: '#1d2320', park: '#283129', water: '#111e24', line: '#475048', text: '#d1d5c9', halo: '#141918' }
     : { background: '#e8e5dc', land: '#e8e5dc', park: '#deded1', water: '#d2d6d2', line: '#a39f93', text: '#57574e', halo: '#e8e5dc' };
   if (!originalFillOpacity.has(map)) originalFillOpacity.set(map, new Map());
   const fillOpacity = originalFillOpacity.get(map);
+  const elevationColor = ['interpolate', ['linear'], ['to-number', ['get', 'ele'], 0],
+    -500, '#082a32', 0, '#123e44', 250, '#197b80', 750, '#42cec5', 1500, '#a8cd85', 2500, '#efb478', 4000, '#ed7969', 6000, '#e0f4f3'];
   for (const layer of map.getStyle().layers || []) {
     if (/^(?:local-|geo-|agent-overlay-)/.test(layer.id)) continue;
     const id = layer.id.toLowerCase();
     try {
-      map.setLayoutProperty(layer.id, 'visibility', satellite && layer.type === 'fill-extrusion' ? 'none' : 'visible');
-      if (id.includes('building')) map.setLayoutProperty(layer.id, 'visibility', satellite ? 'none' : 'visible');
-      if (layer.type === 'background') map.setPaintProperty(layer.id, 'background-color', colors.background);
+      map.setLayoutProperty(layer.id, 'visibility', (satellite || spectral) && layer.type === 'fill-extrusion' ? 'none' : 'visible');
+      if (id.includes('building')) map.setLayoutProperty(layer.id, 'visibility', satellite || spectral ? 'none' : 'visible');
+      if (layer.type === 'background') map.setPaintProperty(layer.id, 'background-color', spectral ? '#07151d' : colors.background);
       if (layer.type === 'fill') {
         if (!fillOpacity.has(layer.id)) fillOpacity.set(layer.id, layer.paint?.['fill-opacity'] ?? 1);
-        const color = id.includes('water') ? colors.water : /park|wood|grass|landcover/.test(id) ? colors.park : colors.land;
+        const color = spectral && id.includes('water') ? '#07151d' : id.includes('water') ? colors.water : /park|wood|grass|landcover/.test(id) ? colors.park : colors.land;
         map.setPaintProperty(layer.id, 'fill-opacity-transition', { duration: motionDuration(360) });
-        map.setPaintProperty(layer.id, 'fill-opacity', satellite ? 0 : fillOpacity.get(layer.id));
+        map.setPaintProperty(layer.id, 'fill-opacity', satellite ? 0 : spectral ? (id.includes('water') ? 1 : 0) : fillOpacity.get(layer.id));
         map.setPaintProperty(layer.id, 'fill-color', color);
         map.setPaintProperty(layer.id, 'fill-outline-color', color);
       }
       if (layer.type === 'line') {
-        map.setPaintProperty(layer.id, 'line-color', satellite ? '#d3d5c6' : colors.line);
-        const opacity = satellite ? 0.12 : terrain ? 0.45 : 0.85;
+        map.setPaintProperty(layer.id, 'line-color', spectral ? '#82b6b8' : satellite ? '#d3d5c6' : colors.line);
+        const opacity = spectral ? 0.22 : satellite ? 0.12 : terrain ? 0.45 : 0.85;
         map.setPaintProperty(layer.id, 'line-opacity-transition', { duration: motionDuration(240) });
         map.setPaintProperty(layer.id, 'line-opacity', /minor|service|path|track|residential/.test(id)
           ? ['interpolate', ['linear'], ['zoom'], 9, 0, 12, opacity * .35, 15, opacity] : opacity);
       }
       if (layer.type === 'symbol') {
-        map.setPaintProperty(layer.id, 'text-color', satellite ? '#d6d9cd' : colors.text);
-        map.setPaintProperty(layer.id, 'text-halo-color', satellite ? '#151d1b' : colors.halo);
-        const opacity = satellite ? 0.8 : 1;
+        map.setPaintProperty(layer.id, 'text-color', spectral ? '#b9e0dc' : satellite ? '#d6d9cd' : colors.text);
+        map.setPaintProperty(layer.id, 'text-halo-color', spectral ? '#07151d' : satellite ? '#151d1b' : colors.halo);
+        const opacity = spectral ? 0.65 : satellite ? 0.8 : 1;
         const minor = /poi|housenumber|address|road.*label|transportation.*name/.test(id);
         map.setPaintProperty(layer.id, 'text-opacity-transition', { duration: motionDuration(160) });
         map.setPaintProperty(layer.id, 'text-opacity', minor ? ['interpolate', ['linear'], ['zoom'], 11, 0, 13, opacity * .45, 15, opacity] : opacity);
@@ -423,13 +427,18 @@ function applyMonochrome(map, theme, mode = 'route') {
   const buildingColor = satellite ? '#b9bdae' : dark ? '#343638' : '#b4b2a8';
   for (const id of [PREVIEW_LAYER, 'local-buildings', 'local-buildings-inferred']) {
     if (map.getLayer(id)) map.setPaintProperty(id, 'fill-extrusion-color', buildingColor);
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite ? 'none' : 'visible');
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite || spectral ? 'none' : 'visible');
   }
   for (const id of ['local-selection', 'local-hover']) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite ? 'none' : 'visible');
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite || spectral ? 'none' : 'visible');
   }
   for (const id of ['local-water', 'local-park', 'local-road']) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite ? 'none' : 'visible');
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', satellite || (spectral && id !== 'local-road') ? 'none' : 'visible');
+  }
+  if (map.getLayer('local-road')) map.setPaintProperty('local-road', 'line-opacity', spectral ? 0.22 : 0.72);
+  if (map.getLayer('local-spectral-surface')) map.setLayoutProperty('local-spectral-surface', 'visibility', spectral ? 'visible' : 'none');
+  for (const layer of map.getStyle().layers || []) {
+    if (layer.id.startsWith('local-spectral-water-')) map.setLayoutProperty(layer.id, 'visibility', spectral ? 'visible' : 'none');
   }
   if (map.getLayer('local-satellite')) {
     map.setLayoutProperty('local-satellite', 'visibility', 'visible');
@@ -437,17 +446,18 @@ function applyMonochrome(map, theme, mode = 'route') {
     map.setPaintProperty('local-satellite', 'raster-opacity', satellite ? 1 : 0);
   }
   for (const id of ['local-hillshade', 'local-contours', 'local-contour-labels']) {
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', terrain ? 'visible' : 'none');
+    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', terrain || spectral ? 'visible' : 'none');
   }
   if (map.getLayer('local-hillshade')) {
-    map.setPaintProperty('local-hillshade', 'hillshade-shadow-color', dark ? '#000000' : '#5b574f');
-    map.setPaintProperty('local-hillshade', 'hillshade-highlight-color', dark ? '#72776f' : '#fffdf3');
-    map.setPaintProperty('local-hillshade', 'hillshade-accent-color', dark ? '#242722' : '#a8a393');
+    map.setPaintProperty('local-hillshade', 'hillshade-exaggeration', spectral ? 0.95 : 0.7);
+    map.setPaintProperty('local-hillshade', 'hillshade-shadow-color', spectral ? '#020c16' : dark ? '#000000' : '#5b574f');
+    map.setPaintProperty('local-hillshade', 'hillshade-highlight-color', spectral ? '#b4efe8' : dark ? '#72776f' : '#fffdf3');
+    map.setPaintProperty('local-hillshade', 'hillshade-accent-color', spectral ? '#082330' : dark ? '#242722' : '#a8a393');
   }
-  if (map.getLayer('local-contours')) map.setPaintProperty('local-contours', 'line-color', dark ? '#969b8e' : '#827c6d');
+  if (map.getLayer('local-contours')) map.setPaintProperty('local-contours', 'line-color', spectral ? elevationColor : dark ? '#969b8e' : '#827c6d');
   if (map.getLayer('local-contour-labels')) {
-    map.setPaintProperty('local-contour-labels', 'text-color', dark ? '#a8ac9f' : '#716b5d');
-    map.setPaintProperty('local-contour-labels', 'text-halo-color', colors.background);
+    map.setPaintProperty('local-contour-labels', 'text-color', spectral ? elevationColor : dark ? '#a8ac9f' : '#716b5d');
+    map.setPaintProperty('local-contour-labels', 'text-halo-color', spectral ? '#07151d' : colors.background);
   }
   const routeColor = terrain && !dark ? '#343830' : '#ffffff';
   for (const [id, property, color] of [
@@ -531,7 +541,7 @@ class CityExplorer {
   constructor() {
     this.elements = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
     this.theme = preference('theme', 'dark');
-    this.mapMode = ['satellite', 'route', 'terrain'].includes(preference('mapMode')) ? preference('mapMode') : 'satellite';
+    this.mapMode = ['satellite', 'route', 'terrain', 'spectral'].includes(preference('mapMode')) ? preference('mapMode') : 'satellite';
     this.workspaceView = 'explore';
     this.viewMode = false;
     this.country = { country: '', countryCode: '', method: 'detecting' };
@@ -586,6 +596,7 @@ class CityExplorer {
     this.agentLastMessage = '';
     this.agentPanelDismissed = false;
     this.mapActions = [];
+    this.redoMapActions = [];
     this.agentSnapshot = null;
     this.agentActivity = { connection: 'CONNECTING', request: 'Waiting for connection', tool: 'No active tool' };
     this.worker = new Worker(new URL('./tile-worker.js', import.meta.url), { type: 'module' });
@@ -642,6 +653,8 @@ class CityExplorer {
     el['agent-cancel'].addEventListener('click', () => this.cancelAgentRequest());
     el['agent-task-stop']?.addEventListener('click', () => this.cancelAgentRequest());
     el['action-history-undo']?.addEventListener('click', () => this.undoMapAction());
+    el['action-history-redo']?.addEventListener('click', () => this.redoMapAction());
+    this.updateActionChip();
     el['copy-coordinates']?.addEventListener('click', () => this.copyCoordinates());
     el['agent-dismiss-result'].addEventListener('click', () => this.dismissAgentResult());
     document.getElementById('agent-dismiss-question').addEventListener('click', () => this.cancelAgentRequest());
@@ -667,14 +680,19 @@ class CityExplorer {
     });
     document.getElementById('cache-status').textContent = navigator.serviceWorker?.controller ? 'Cache ready / 96 MB limit' : 'Local cache unavailable; browser caching remains active';
     navigator.serviceWorker?.controller?.postMessage({ type: 'map-cache-stats' });
-    document.querySelectorAll('button[data-map-mode]').forEach((button) => button.addEventListener('click', () => {
-      this.setMapMode(button.dataset.mapMode);
-      if (this.workspaceView === 'explore') this.setManualControlsOpen(button.dataset.mapMode === 'terrain');
-      this.refreshMapMetadata();
-    }));
+    document.querySelectorAll('button[data-map-mode]').forEach((button) => {
+      button.setAttribute('aria-pressed', String(button.dataset.mapMode === this.mapMode));
+      button.addEventListener('click', () => {
+        this.setMapMode(button.dataset.mapMode);
+        if (this.workspaceView === 'explore') this.setManualControlsOpen(button.dataset.mapMode === 'terrain');
+        this.refreshMapMetadata();
+      });
+    });
     document.querySelectorAll('button[data-workspace-view]').forEach((button) => button.addEventListener('click', () => this.setWorkspaceView(button.dataset.workspaceView)));
     document.querySelectorAll('[data-open-routes]').forEach((button) => button.addEventListener('click', () => this.setWorkspaceView('routes')));
     document.querySelectorAll('[data-layer-toggle]').forEach((button) => button.addEventListener('click', () => this.toggleMapLayer(button.dataset.layerToggle)));
+    this.bindSpectralUi();
+    this.applyLayerPreferences();
     el['contour-strength'].addEventListener('input', () => {
       if (this.markManualChange()) return;
       this.contourStrength = Number(el['contour-strength'].value) / 100;
@@ -742,6 +760,72 @@ class CityExplorer {
     });
   }
 
+  bindSpectralUi() {
+    document.querySelectorAll('[data-spectral-camera]').forEach((button) => button.addEventListener('click', () => {
+      const views = { overview: { pitch: 0 }, relief: { pitch: 60, bearing: -25 }, cinematic: { pitch: 72, bearing: -35 } };
+      const camera = views[button.dataset.spectralCamera];
+      if (!camera || !this.map || this.markManualChange()) return;
+      const before = this.captureMapAction();
+      if (!this.setTerrainView(camera.pitch > 0, 0, this.terrainExaggeration, false, false)) return;
+      this.locationRevision = (this.locationRevision || 0) + 1;
+      this.map.easeTo({ ...camera, duration: motionDuration(700) });
+      this.recordMapAction(`Spectral camera: ${button.dataset.spectralCamera}`, before);
+      this.saveExploreState();
+    }));
+    document.querySelectorAll('[data-spectral-layer]').forEach((button) => button.addEventListener('click', () => this.toggleMapLayer(button.dataset.spectralLayer)));
+    document.querySelectorAll('[data-spectral-preset]').forEach((button) => button.addEventListener('click', () => {
+      const presets = { alps: { center: [7.96, 46.58], zoom: 11.5 }, volcano: { center: [-121.76, 46.85], zoom: 11 }, canyon: { center: [-112.14, 36.1], zoom: 11 } };
+      const camera = presets[button.dataset.spectralPreset];
+      if (!camera || !this.map || this.markManualChange()) return;
+      const before = this.captureMapAction();
+      this.locationRevision = (this.locationRevision || 0) + 1;
+      this.terrainPointPopup?.remove();
+      this.map.flyTo({ ...camera, duration: motionDuration(1400) });
+      this.recordMapAction(`Spectral view: ${button.dataset.spectralPreset}`, before);
+      this.saveExploreState();
+    }));
+    const range = this.elements['terrain-exaggeration'];
+    if (range) {
+      range.min = '1'; range.max = '3'; range.step = '0.05';
+      range.value = String(this.terrainExaggeration ?? 1.25);
+      range.addEventListener('input', () => {
+        if (this.markManualChange()) { this.updateSpectralConsole(); return; }
+        const value = numeric(range.value);
+        if (value === null || value < 1 || value > 3) return;
+        const before = this.captureMapAction();
+        if (this.setTerrainView(this.terrainEnabled, 0, value, false, false)) this.recordMapAction('Terrain exaggeration', before);
+      });
+    }
+    this.updateSpectralConsole();
+  }
+
+  updateSpectralConsole() {
+    const set = (id, value) => { const element = this.elements[id]; if (element) element.textContent = value; };
+    const console = this.elements['spectral-console'];
+    if (console) console.hidden = this.mapMode !== 'spectral' || this.workspaceView !== 'explore';
+    const range = this.elements['terrain-exaggeration'];
+    if (range) range.value = String(this.terrainExaggeration ?? 1.25);
+    set('terrain-exaggeration-value', `${(this.terrainExaggeration ?? 1.25).toFixed(2)}x`);
+    const center = this.metadataTilePoint(this.map?.getCenter?.(), 0);
+    const pitch = this.map?.getPitch?.();
+    const bearing = this.map?.getBearing?.();
+    const zoom = this.map?.getZoom?.();
+    set('spectral-pitch', Number.isFinite(pitch) ? `${pitch.toFixed(0)}\u00b0` : '--');
+    set('spectral-bearing', Number.isFinite(bearing) ? `${bearing.toFixed(0)}\u00b0` : '--');
+    set('spectral-zoom', Number.isFinite(zoom) ? zoom.toFixed(2) : '--');
+    set('spectral-coordinates', center ? `${center.lat.toFixed(5)}, ${center.lon.toFixed(5)}` : '--');
+    const anchored = center && this.selected && Math.abs(center.lat - this.selected.lat) < .005 && Math.abs(((center.lon - this.selected.lon + 540) % 360) - 180) < .005;
+    set('spectral-location', anchored ? this.selected.shortName || this.selected.name : center ? 'Map center' : 'Location unavailable');
+    const elevation = this.spectralElevation;
+    const current = center && elevation && elevation.lon === center.lon && elevation.lat === center.lat;
+    set('spectral-elevation', current ? Number.isFinite(elevation.value) ? `~${(Math.round(elevation.value) || 0).toLocaleString()} m` : 'Unavailable' : center ? 'Sampling...' : '--');
+    document.querySelectorAll('[data-spectral-camera]').forEach((button) => {
+      const camera = button.dataset.spectralCamera;
+      const active = camera === 'overview' ? pitch === 0 : camera === 'relief' ? pitch === 60 && bearing === -25 : camera === 'cinematic' && pitch === 72 && bearing === -35;
+      button.setAttribute('aria-pressed', String(active));
+    });
+  }
+
   setViewMode(enabled) {
     this.viewMode = enabled;
     document.documentElement.dataset.viewMode = String(enabled);
@@ -806,6 +890,7 @@ class CityExplorer {
   recordMapAction(label, before, options = {}) {
     if (!before) return;
     this.mapActions ||= [];
+    this.redoMapActions = [];
     this.mapActions.push({ label: String(label).slice(0, 120), before, guard: this.mapActionGuard(), cameraRevision: this.cameraInteractionRevision || 0, time: Date.now(), ...options });
     if (this.mapActions.length > 20) this.mapActions.shift();
     this.updateActionChip();
@@ -822,11 +907,18 @@ class CityExplorer {
 
   updateActionChip() {
     const action = this.mapActions?.at(-1);
+    const redo = this.redoMapActions?.at(-1);
     const chip = this.elements['action-history-chip'];
     if (!chip) return;
-    chip.hidden = !action;
-    this.elements['action-history-label'].textContent = action?.label || '';
-    this.elements['action-history-undo'].disabled = Boolean(this.agentSubmitting || this.agentRunId || this.undoing);
+    chip.hidden = false;
+    const busy = Boolean(this.agentSubmitting || this.agentRunId || this.undoing);
+    const label = this.elements['action-history-label'];
+    if (label) {
+      label.classList.add('sr-only');
+      label.textContent = action?.label || '';
+    }
+    if (this.elements['action-history-undo']) this.elements['action-history-undo'].disabled = busy || !action;
+    if (this.elements['action-history-redo']) this.elements['action-history-redo'].disabled = busy || !redo || redo.action.serverUndo || redo.guard !== this.mapActionGuard();
   }
 
   async undoMapAction() {
@@ -842,17 +934,48 @@ class CityExplorer {
         if (!result.undone) throw new Error('The service could not undo this action.');
         if (action.guard && action.guard !== this.mapActionGuard()) {
           this.mapActions.pop();
+          this.redoMapActions = [];
           this.setGeoStatus('The server operation was undone. Newer local map changes were kept instead of being overwritten.', true);
           return;
         }
       }
-      const currentCamera = this.captureMapAction().camera;
+      const after = this.captureMapAction();
       const moved = (this.cameraInteractionRevision || 0) !== (action.cameraRevision || 0);
-      this.restoreMapAction(moved ? { ...action.before, camera: currentCamera } : action.before);
+      this.restoreMapAction(moved ? { ...action.before, camera: after.camera } : action.before);
       this.mapActions.pop();
+      // The backend exposes undo only; replaying its client snapshot would diverge from server state.
+      if (action.serverUndo) this.redoMapActions = [];
+      else {
+        this.redoMapActions ||= [];
+        this.redoMapActions.push({ action, after, guard: this.mapActionGuard(), cameraRevision: this.cameraInteractionRevision || 0 });
+      }
       this.setGeoStatus(`Undid: ${action.label}`);
     } catch (error) {
       this.setGeoStatus(`Undo was not applied: ${error.message}`, true);
+    } finally {
+      this.undoing = false;
+      this.updateActionChip();
+    }
+  }
+
+  async redoMapAction() {
+    if (this.agentSubmitting || this.agentRunId || this.undoing) return;
+    const redo = this.redoMapActions?.at(-1);
+    if (!redo || redo.action.serverUndo) return this.setGeoStatus('There is no client-only map action to redo. Server operations cannot be redone.');
+    if (redo.guard !== this.mapActionGuard()) return this.setGeoStatus('This action cannot overwrite more recent manual map changes. Keep the current state or undo those changes first.', true);
+    const before = this.captureMapAction();
+    this.undoing = true;
+    this.updateActionChip();
+    try {
+      const moved = (this.cameraInteractionRevision || 0) !== redo.cameraRevision;
+      this.restoreMapAction(moved ? { ...redo.after, camera: before.camera } : redo.after);
+      this.mapActions ||= [];
+      this.mapActions.push({ ...redo.action, before, guard: this.mapActionGuard(), cameraRevision: this.cameraInteractionRevision || 0 });
+      this.redoMapActions.pop();
+      this.setGeoStatus(`Redid: ${redo.action.label}`);
+    } catch (error) {
+      try { this.restoreMapAction(before); } catch { /* Keep history intact if map rendering also prevents rollback. */ }
+      this.setGeoStatus(`Redo was not applied: ${error.message}`, true);
     } finally {
       this.undoing = false;
       this.updateActionChip();
@@ -1122,6 +1245,7 @@ class CityExplorer {
     this.renderAgentSources([]);
     const normalized = query.toLowerCase().trim().replace(/[.!]$/, '');
     if (normalized === 'undo') { this.undoMapAction(); return true; }
+    if (normalized === 'redo') { this.redoMapAction(); return true; }
     if (/\b(?:slope|aspect|viewshed|elevation profile|elevation gain|roads above|roads below)\b/.test(normalized)) {
       this.showCommandResult('Terrain analysis is not available yet', 'Meridian can show relief, contours, and sampled point elevations. Slope, aspect, elevation profiles, and elevation-filtered roads require terrain analysis that this map service does not currently provide.');
       return true;
@@ -1130,14 +1254,14 @@ class CityExplorer {
       this.showCommandResult('Driving routes are currently supported', 'The route service uses the OpenStreetMap road network. Hiking, scenic, and off-road routing are not available; Meridian will not substitute a driving plan or invent journey estimates.');
       return true;
     }
-    const mode = normalized.match(/^(?:show|switch to|open)(?: the)? (satellite|streets?|terrain)(?: (?:map|view|mode))?$/);
+    const mode = normalized.match(/^(?:show|switch to|open)(?: the)? (satellite|streets?|terrain|spectral)(?: (?:map|view|mode))?$/);
     if (mode) {
       const before = this.captureMapAction();
       this.setWorkspaceView('explore');
       this.setMapMode(mode[1].startsWith('street') ? 'route' : mode[1]);
       if (mode[1] === 'terrain') this.setManualControlsOpen(true);
       this.refreshMapMetadata();
-      this.showCommandResult(mode[1] === 'terrain' ? 'Topographic view / contours in meters' : mode[1] === 'satellite' ? 'Satellite imagery / plan view' : 'Streets / road network');
+      this.showCommandResult(mode[1] === 'spectral' ? 'Spectral terrain / altitude palette and contours in meters' : mode[1] === 'terrain' ? 'Topographic view / contours in meters' : mode[1] === 'satellite' ? 'Satellite imagery / plan view' : 'Streets / road network');
       this.recordMapAction(query, before);
       return true;
     }
@@ -1146,7 +1270,7 @@ class CityExplorer {
       const before = this.captureMapAction();
       const name = layer[1] === 'show' || layer[1] === 'hide' || layer[1] === 'enable' || layer[1] === 'disable' ? layer[2] : layer[1];
       const enabled = ['show', 'enable', 'on'].includes(layer[1]) || layer[2] === 'on';
-      if (['contours', 'hillshade'].includes(name) && this.mapMode !== 'terrain') {
+      if (['contours', 'hillshade'].includes(name) && !['terrain', 'spectral'].includes(this.mapMode)) {
         this.setWorkspaceView('explore');
         this.setMapMode('terrain');
       }
@@ -1174,8 +1298,8 @@ class CityExplorer {
     for (const layer of this.map?.getStyle?.()?.layers || []) {
       if (!this.layerMatchesPreference(layer, name)) continue;
       const id = layer.id.toLowerCase();
-      const inMode = /local-contour|local-hillshade/.test(id) ? this.mapMode === 'terrain'
-        : this.mapMode !== 'satellite' || (!['fill', 'fill-extrusion'].includes(layer.type) && name !== 'buildings');
+      const inMode = /local-contour|local-hillshade/.test(id) ? ['terrain', 'spectral'].includes(this.mapMode)
+        : !['satellite', 'spectral'].includes(this.mapMode) || (!['fill', 'fill-extrusion'].includes(layer.type) && name !== 'buildings');
       this.map.setLayoutProperty(layer.id, 'visibility', enabled && inMode ? 'visible' : 'none');
     }
     this.applyMapMode();
@@ -1196,12 +1320,14 @@ class CityExplorer {
 
   applyLayerPreferences() {
     const preferences = this.layerPreferences;
-    if (!preferences || !this.map?.getStyle?.()) return;
+    if (!preferences) return;
     document.querySelectorAll('[data-layer-toggle]').forEach((button) => {
       button.setAttribute('aria-pressed', String(preferences[button.dataset.layerToggle]));
-      button.disabled = button.dataset.layerToggle === 'buildings' && this.mapMode === 'satellite';
+      button.disabled = button.dataset.layerToggle === 'buildings' && ['satellite', 'spectral'].includes(this.mapMode);
       button.setAttribute('title', button.disabled ? 'Buildings are visible in Streets and Terrain' : '');
     });
+    document.querySelectorAll('[data-spectral-layer]').forEach((button) => button.setAttribute('aria-pressed', String(preferences[button.dataset.spectralLayer])));
+    if (!this.map?.getStyle?.() || this.map.isStyleLoaded?.() === false) return;
     for (const layer of this.map.getStyle()?.layers || []) {
       if (Object.entries(preferences).some(([name, enabled]) => !enabled && this.layerMatchesPreference(layer, name))) this.map.setLayoutProperty(layer.id, 'visibility', 'none');
     }
@@ -1756,6 +1882,7 @@ class CityExplorer {
   }
 
   createMap() {
+    this.spectralTileUrl = registerSpectralTerrain(window.maplibregl);
     if (window.mlcontour) {
       this.contourDem = new window.mlcontour.DemSource({ url: TERRAIN_TILE_URL, encoding: 'terrarium', maxzoom: 13, worker: true, cacheSize: 200 });
       this.contourDem.setupMaplibre(window.maplibregl);
@@ -1819,6 +1946,7 @@ class CityExplorer {
     });
     this.map.on('move', () => {
       if (this.regionalImageryActive) this.updateSatelliteImagery();
+      this.updateSpectralConsole();
     });
     this.map.on('error', (event) => {
       const source = event.sourceId || event.error?.sourceId;
@@ -1829,8 +1957,8 @@ class CityExplorer {
       } else if (source === 'local-imagery') {
         this.imageryUnavailable = true;
         if (this.mapMode === 'satellite') this.showMapNotice('Some satellite tiles could not load. Select Satellite again to retry, or choose the street map.');
-      } else if (source === 'local-contour-source' || source === TERRAIN_SOURCE) {
-        this.showMapNotice('Some elevation data is unavailable. Map navigation remains active.');
+      } else if (source === 'local-contour-source' || source === TERRAIN_SOURCE || source === 'local-spectral-elevation') {
+        this.setTerrainDataStatus('Some elevation data is unavailable. Map navigation remains active.');
       }
     });
     this.map.on('dblclick', (event) => {
@@ -1839,7 +1967,7 @@ class CityExplorer {
       this.operate('reset');
     });
     this.map.on('click', (event) => {
-      if (this.viewMode || (!this.pinMode && (this.mapMode !== 'terrain' || this.workspaceView !== 'explore'))) return;
+      if (this.viewMode || (!this.pinMode && (!['terrain', 'spectral'].includes(this.mapMode) || this.workspaceView !== 'explore'))) return;
       const interactiveLayers = [PREVIEW_LAYER, 'local-buildings', 'local-buildings-inferred', 'local-poi-marker', 'local-search-result', 'geo-pin', 'geo-route-stop', 'geo-area-fill']
         .filter((layer) => this.map.getLayer(layer));
       if (interactiveLayers.length && this.map.queryRenderedFeatures(event.point, { layers: interactiveLayers }).length) return;
@@ -1871,6 +1999,12 @@ class CityExplorer {
       attribution: '<a href="https://www.earthdata.nasa.gov/centers/gibs" target="_blank" rel="noopener">NASA GIBS / HLS</a>; Contains modified Copernicus Sentinel data (2026)',
     });
     this.map.addLayer({ id: 'local-regional-satellite', type: 'raster', source: 'local-regional-imagery', layout: { visibility: 'none' }, paint: { 'raster-saturation': 0, 'raster-brightness-max': 1, 'raster-contrast': 0, 'raster-resampling': 'linear', 'raster-fade-duration': motionDuration(300) } }, firstLayer);
+    this.map.addSource('local-spectral-elevation', { type: 'raster', tiles: [this.spectralTileUrl], tileSize: 256, maxzoom: 13 });
+    this.map.addLayer({ id: 'local-spectral-surface', type: 'raster', source: 'local-spectral-elevation', layout: { visibility: 'none' }, paint: { 'raster-opacity': 1, 'raster-resampling': 'linear', 'raster-fade-duration': motionDuration(300) } }, firstLine);
+    // The altitude raster sits above base fills; retain real water geometry as an ink mask.
+    for (const layer of layers.filter((layer) => layer.type === 'fill' && /water/i.test(layer.id) && !layer.id.startsWith('local-'))) {
+      this.map.addLayer({ ...layer, id: `local-spectral-water-${layer.id}`, layout: { ...layer.layout, visibility: 'none' }, paint: { 'fill-color': '#07151d', 'fill-opacity': 1 } }, firstLine);
+    }
     this.map.addLayer({ id: 'local-hillshade', type: 'hillshade', source: TERRAIN_SOURCE, layout: { visibility: 'none' }, paint: { 'hillshade-exaggeration': 0.7, 'hillshade-illumination-direction': 315 } }, firstLine);
     if (!this.contourDem) return;
     this.map.addSource('local-contour-source', {
@@ -1886,6 +2020,13 @@ class CityExplorer {
     if (!notice) return;
     notice.textContent = message;
     notice.classList.remove('is-hidden');
+  }
+
+  setTerrainDataStatus(message) {
+    const status = this.elements['terrain-data-status'];
+    if (!status) return;
+    status.textContent = message;
+    status.hidden = !message;
   }
 
   applyMapMode() {
@@ -1931,7 +2072,7 @@ class CityExplorer {
   }
 
   setMapMode(mode) {
-    if (!['satellite', 'route', 'terrain'].includes(mode)) return;
+    if (!['satellite', 'route', 'terrain', 'spectral'].includes(mode)) return;
     if (this.markManualChange()) return;
     if (mode === 'satellite' && this.imageryUnavailable) {
       this.imageryUnavailable = false;
@@ -1941,11 +2082,13 @@ class CityExplorer {
       this.regionalImageryUnavailable = false;
       this.map?.getSource('local-regional-imagery')?.setTiles([REGIONAL_IMAGERY.tiles]);
     }
+    const enteringSpectral = mode === 'spectral' && this.mapMode !== 'spectral';
     this.mapMode = mode;
+    if (enteringSpectral) this.setTerrainView(true);
     if (!this.applyingMapActions && !this.applyingAgentMap) savePreference('mapMode', mode);
     document.getElementById('map-notice')?.classList.add('is-hidden');
     this.applyMapMode();
-    if (mode === 'terrain' && !this.contourDem) this.showMapNotice('Contour library unavailable. Showing shaded terrain only.');
+    if (['terrain', 'spectral'].includes(mode) && !this.contourDem) this.setTerrainDataStatus('Contour library unavailable. Showing shaded terrain only.');
     this.terrainPointPopup?.remove();
     this.saveExploreState();
   }
@@ -1984,7 +2127,7 @@ class CityExplorer {
     const center = this.map?.getCenter();
     const anchored = center && this.selected && Math.abs(center.lat - this.selected.lat) < .005 && Math.abs(((center.lng - this.selected.lon + 540) % 360) - 180) < .005;
     set('context-place', anchored ? this.selected.shortName || this.selected.name : center ? 'Map center' : 'San Francisco Bay Area');
-    set('context-mode', this.mapMode === 'satellite' ? this.regionalImageryActive ? 'Regional satellite / Sentinel-2 scene' : 'Satellite / Aerial composite' : this.mapMode === 'route' ? 'Street map' : 'Topographic / Elevation contours');
+    set('context-mode', this.mapMode === 'spectral' ? 'Spectral / Altitude-colored terrain' : this.mapMode === 'satellite' ? this.regionalImageryActive ? 'Regional satellite / Sentinel-2 scene' : 'Satellite / Aerial composite' : this.mapMode === 'route' ? 'Street map' : 'Topographic / Elevation contours');
     set('context-zoom', this.map ? `${this.map.getZoom().toFixed(1)} / ${this.terrainEnabled ? '3D terrain' : 'Plan view'}` : '--');
     set('context-guidance', this.regionalImageryActive
       ? `Sentinel-2 scene from ${REGIONAL_IMAGERY.date} at 30 m. Clouds and small gaps remain; elevations are sampled, not survey measurements.`
@@ -2015,8 +2158,8 @@ class CityExplorer {
     replay.hidden = !this.geo.route || !this.routeSearchEdges(this.geo.route).length;
     replay.textContent = this.geo.routeAnimation ? 'Stop replay' : 'Replay calculation';
     set('view-location', this.selected?.name || 'San Francisco Bay Area');
-    set('view-title', this.workspaceView === 'routes' ? 'Route Planner' : this.workspaceView === 'workspace' ? 'Saved Places' : this.mapMode === 'terrain' ? 'Terrain Explorer' : 'City Explorer');
-    set('view-mode-label', this.mapMode === 'satellite' ? 'Satellite imagery' : this.mapMode === 'route' ? 'Monochrome / Streets' : 'Topographic / Contours in meters');
+    set('view-title', this.workspaceView === 'routes' ? 'Route Planner' : this.workspaceView === 'workspace' ? 'Saved Places' : this.mapMode === 'spectral' ? 'Spectral Terrain' : this.mapMode === 'terrain' ? 'Terrain Explorer' : 'City Explorer');
+    set('view-mode-label', this.mapMode === 'spectral' ? 'Altitude palette / Contours in meters' : this.mapMode === 'satellite' ? 'Satellite imagery' : this.mapMode === 'route' ? 'Monochrome / Streets' : 'Topographic / Contours in meters');
     if (center) set('map-coordinates', `${Math.abs(center.lat).toFixed(4)} ${center.lat < 0 ? 'S' : 'N'} / ${Math.abs(center.lng).toFixed(4)} ${center.lng < 0 ? 'W' : 'E'}`);
     const inspected = this.inspectedCoordinate || center;
     if (inspected) {
@@ -2024,7 +2167,8 @@ class CityExplorer {
       set('context-coordinates', `${Math.abs(inspected.lat).toFixed(5)}\u00b0 ${inspected.lat < 0 ? 'S' : 'N'}\n${Math.abs(lon).toFixed(5)}\u00b0 ${lon < 0 ? 'W' : 'E'}${this.inspectedCoordinate ? '\nSelected point' : ''}`);
     }
     const terrainControls = document.getElementById('terrain-controls');
-    terrainControls.hidden = this.mapMode !== 'terrain' || this.workspaceView !== 'explore';
+    terrainControls.hidden = !['terrain', 'spectral'].includes(this.mapMode) || this.workspaceView !== 'explore';
+    this.updateSpectralConsole();
     if (this.map?.unproject && this.map?.getCanvas) {
       const canvas = this.map.getCanvas();
       const left = this.map.unproject([0, canvas.clientHeight / 2]);
@@ -2083,12 +2227,13 @@ class CityExplorer {
     button?.setAttribute('aria-label', this.terrainEnabled ? 'Disable 3D terrain view' : 'Enable 3D terrain view');
   }
 
-  setTerrainView(enabled, duration = 420, exaggeration = this.terrainExaggeration ?? 1.25, strict = false) {
+  setTerrainView(enabled, duration = 420, exaggeration = this.terrainExaggeration ?? 1.25, strict = false, camera = true) {
     if (this.markManualChange()) return false;
     this.terrainEnabled = enabled;
     this.terrainExaggeration = exaggeration;
     this.applyTerrain(strict);
-    this.map.easeTo({ pitch: this.terrainEnabled ? 60 : 0, duration: motionDuration(duration) });
+    if (camera) this.map.easeTo({ pitch: this.terrainEnabled ? 60 : 0, duration: motionDuration(duration) });
+    this.updateSpectralConsole();
     this.saveExploreState();
     return true;
   }
@@ -2122,7 +2267,7 @@ class CityExplorer {
     } else if (validCamera) {
       const selected = this.agentLocation(saved.selected);
       if (selected) this.chooseLocation(selected, { immediate: true });
-      if (['satellite', 'route', 'terrain'].includes(saved.mapMode)) this.mapMode = saved.mapMode;
+      if (['satellite', 'route', 'terrain', 'spectral'].includes(saved.mapMode)) this.mapMode = saved.mapMode;
       for (const name of Object.keys(this.layerPreferences)) if (typeof saved.layerPreferences?.[name] === 'boolean') this.layerPreferences[name] = saved.layerPreferences[name];
       this.contourStrength = Number.isFinite(saved.contourStrength) ? Math.max(.1, Math.min(1, saved.contourStrength)) : .55;
       this.elements['contour-strength'].value = String(Math.round(this.contourStrength * 100));
@@ -2381,7 +2526,7 @@ class CityExplorer {
     if (this.map.getLayer('local-selection')) this.map.setFilter('local-selection', ['==', ['get', 'sourceId'], '__none__']);
     this.map.getSource(FOCUS_SOURCE)?.setData(this.focusFeature(location));
     this.applyTerrain();
-    const camera = { center: [location.lon, location.lat], zoom: overview ? 11 : this.mapMode === 'terrain' ? 12 : 14, pitch: this.terrainEnabled ? 45 : 0, bearing: overview || this.mapMode === 'route' ? 0 : -12 };
+    const camera = { center: [location.lon, location.lat], zoom: overview ? 11 : ['terrain', 'spectral'].includes(this.mapMode) ? 12 : 14, pitch: this.terrainEnabled ? 45 : 0, bearing: overview || this.mapMode === 'route' ? 0 : -12 };
     if (immediate) this.map.jumpTo(camera);
     else this.map.flyTo({ ...camera, duration: motionDuration(600) });
     this.worker.postMessage({ type: 'reset', apiBaseUrl: API_BASE_URL, context: { region: location.id, lat: location.lat, lon: location.lon }, tiles: spiralTiles(location.lon, location.lat, 1) });
@@ -2436,7 +2581,7 @@ class CityExplorer {
 
   setPreviewVisible(visible) {
     this.previewVisible = visible;
-    if (this.map.getLayer(PREVIEW_LAYER)) this.map.setLayoutProperty(PREVIEW_LAYER, 'visibility', visible && this.mapMode !== 'satellite' ? 'visible' : 'none');
+    if (this.map.getLayer(PREVIEW_LAYER)) this.map.setLayoutProperty(PREVIEW_LAYER, 'visibility', visible && !['satellite', 'spectral'].includes(this.mapMode) ? 'visible' : 'none');
   }
 
   setStream(stream) {
@@ -2567,6 +2712,8 @@ class CityExplorer {
       const viewport = values.slice(1).filter(Number.isFinite);
       set('context-center-elevation', format(values[0]), provenance);
       set('terrain-center-elevation', format(values[0]), provenance);
+      this.spectralElevation = { lon: snapshot.center.lon, lat: snapshot.center.lat, value: values[0] };
+      this.updateSpectralConsole();
       set('terrain-range-low', format(viewport.length ? Math.min(...viewport) : null), 'Lowest valid viewport sample, not the minimum terrain elevation.');
       set('terrain-range-high', format(viewport.length ? Math.max(...viewport) : null), 'Highest valid viewport sample, not the maximum terrain elevation.');
       set('terrain-interval', `Sampled viewport range (${viewport.length}/9 points), not exact extrema. ${contourLabel}`, provenance);
@@ -2697,7 +2844,7 @@ class CityExplorer {
 
   async inspectTerrainPoint(event) {
     const map = this.map;
-    if (!map || this.viewMode || this.workspaceView !== 'explore' || this.mapMode !== 'terrain' || !window.maplibregl?.Popup) return;
+    if (!map || this.viewMode || this.workspaceView !== 'explore' || !['terrain', 'spectral'].includes(this.mapMode) || !window.maplibregl?.Popup) return;
     const zoom = Math.max(0, Math.min(13, Math.round(map.getZoom() + 1)));
     const point = this.metadataTilePoint(event?.lngLat, zoom);
     if (!point) return;
@@ -2739,7 +2886,7 @@ class CityExplorer {
     this.updateDashboard();
     document.documentElement.dataset.terrainPoint = 'true';
     const active = () => this.terrainPointSequence === sequence && this.terrainPointPopup === popup &&
-      this.map === map && !this.viewMode && this.workspaceView === 'explore' && this.mapMode === 'terrain';
+      this.map === map && !this.viewMode && this.workspaceView === 'explore' && ['terrain', 'spectral'].includes(this.mapMode);
     const current = () => active() && !controller.signal.aborted && this.contourDem === dem;
     popup.on('close', () => {
       if (this.terrainPointPopup !== popup) return;
@@ -2812,7 +2959,7 @@ class CityExplorer {
         map, dem: this.contourDem, center: { lon: center.lon, lat: center.lat }, width, height, zoom, pitch, bearing, detailsOpen, imageryLod,
         regionalImagery: this.regionalImageryActive === true,
         mapMode: this.mapMode,
-        demZoom: Math.min(13, imageryLod), elevationVisible: detailsOpen || (this.workspaceView === 'explore' && this.mapMode === 'terrain'),
+        demZoom: Math.min(13, imageryLod), elevationVisible: detailsOpen || (this.workspaceView === 'explore' && ['terrain', 'spectral'].includes(this.mapMode)),
         key: [center.lon, center.lat, width, height, zoom, pitch, bearing, padding.top, padding.right, padding.bottom, padding.left,
           terrain?.source, terrain?.exaggeration, detailsOpen, this.workspaceView, this.mapMode, this.regionalImageryActive].join('|'),
       };
@@ -3675,6 +3822,11 @@ class CityExplorer {
       return;
     }
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.tagName?.toLowerCase() === 'select' || target?.isContentEditable) return;
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && ((event.shiftKey && event.key.toLowerCase() === 'z') || (!event.shiftKey && event.key.toLowerCase() === 'y'))) {
+      event.preventDefault();
+      this.redoMapAction();
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
       event.preventDefault();
       this.undoMapAction();

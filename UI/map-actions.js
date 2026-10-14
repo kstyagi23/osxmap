@@ -293,7 +293,7 @@ export class MeridianMapActions {
         }
       } else if (action === 'set_view') effects.push({ action, ...view(input) });
       else if (action === 'set_basemap') {
-        if (!['streets', 'satellite', 'terrain'].includes(input.mode)) throw new Error('Basemap mode must be streets, satellite or terrain.');
+        if (!['streets', 'satellite', 'terrain', 'spectral'].includes(input.mode)) throw new Error('Basemap mode must be streets, satellite, terrain or spectral.');
         if (typeof this.app.setMapMode !== 'function') throw new Error('Basemap control is unavailable.');
         effects.push({ action, mode: input.mode });
       } else if (action === 'set_terrain') {
