@@ -1036,16 +1036,22 @@ def fetch_json(url: str, headers: dict[str, str], timeout: float, method: str = 
                 retry_after_seconds(error.headers.get("Retry-After")),
             ) from error
         raise ServiceError(f"{urllib.parse.urlparse(url).netloc} returned {error.code}") from error
-    except (urllib.error.URLError, TimeoutError) as error:
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise ServiceError(f"{urllib.parse.urlparse(url).netloc} returned an invalid JSON response.", 503) from error
+    except (urllib.error.URLError, OSError) as error:
         reason = getattr(error, "reason", str(error))
-        raise ServiceError(f"Could not reach {urllib.parse.urlparse(url).netloc}: {reason}") from error
+        raise ServiceError(f"Could not reach {urllib.parse.urlparse(url).netloc}: {reason}", 503) from error
 
 
 def location_result(item: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
     try:
         lat = float(item["lat"])
         lon = float(item["lon"])
     except (KeyError, TypeError, ValueError):
+        return None
+    if not valid_coordinate(lon, lat):
         return None
     bbox_raw = item.get("boundingbox") or []
     try:
@@ -1054,7 +1060,11 @@ def location_result(item: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         bbox = [lon - 0.03, lat - 0.03, lon + 0.03, lat + 0.03]
     address = item.get("address") or {}
+    if not isinstance(address, dict):
+        return None
     name = item.get("display_name") or ""
+    if not isinstance(name, str) or not isinstance(address.get("country_code", ""), str):
+        return None
     short_name = item.get("name") or address.get("city") or address.get("town") or address.get("village") or name.split(",")[0]
     return {
         "id": f"{item.get('osm_type') or 'place'}:{item.get('osm_id') or f'{lat},{lon}'}",
@@ -1077,6 +1087,8 @@ def nominatim_search(query: str, country_code: str, limit: int) -> list[dict[str
             params["countrycodes"] = country
         url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(params)
         payload = fetch_json(url, {"User-Agent": CONFIG.user_agent, "Referer": "http://localhost/", "Accept": "application/json"}, 12)
+        if not isinstance(payload, list):
+            raise ServiceError("Nominatim returned an invalid search response.", 503)
         return [result for item in payload for result in [location_result(item)] if result]
 
     return NOMINATIM_QUEUE.run(task)
@@ -1095,7 +1107,10 @@ def resolve_location(query: str, country_code: str) -> dict[str, Any] | None:
     cached = CACHE.get_geocode(key)
     if cached:
         return {**cached, "cached": True}
-    results = nominatim_search(query, country, 1)
+    try:
+        results = nominatim_search(query, country, 1)
+    except ServiceError:
+        results = []
     if not results:
         discovery = lookup_places(query, country_code, None, None)
         results = [map_location(CACHE.get_place(place["id"], include_payload=True) or place, cached=discovery["stored"]) for place in discovery["results"]]
@@ -1164,6 +1179,8 @@ def search_nominatim_places(query: str, country_code: str, lat: float | None, lo
             params["viewbox"] = f"{lon - 0.25:.4f},{lat + 0.25:.4f},{lon + 0.25:.4f},{lat - 0.25:.4f}"
         url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(params)
         payload = fetch_json(url, {"User-Agent": CONFIG.user_agent, "Referer": "http://localhost/", "Accept": "application/json"}, 12)
+        if not isinstance(payload, list):
+            raise ServiceError("Nominatim returned an invalid search response.", 503)
         return [place for item in payload if isinstance(item, dict) for place in [place_from_nominatim(item)] if place]
 
     return NOMINATIM_QUEUE.run(task)
@@ -1238,7 +1255,7 @@ def public_place(place: dict[str, Any]) -> dict[str, Any]:
             types = payload.get("types")
             if isinstance(types, list) and "locality" in types:
                 result["placeType"] = "locality"
-            elif payload.get("type") in {"City", "Town", "Village", "Locality"}:
+            elif isinstance(payload.get("type"), str) and payload["type"] in {"City", "Town", "Village", "Locality"}:
                 result["placeType"] = str(payload["type"]).lower()
     return result
 
@@ -1278,7 +1295,13 @@ def map_location(place: dict[str, Any], cached: bool = False) -> dict[str, Any]:
 def suggest_map_locations(query: str, country_code: str) -> list[dict[str, Any]]:
     # Saved landmarks must not be hidden by a previously cached empty city search.
     saved = saved_place_matches(query, country_code)
-    return [map_location(place, cached=True) for place in saved[:8]] if saved else suggest_locations(query, country_code)
+    if saved:
+        return [map_location(place, cached=True) for place in saved[:8]]
+    try:
+        return suggest_locations(query, country_code)
+    except ServiceError:
+        discovery = lookup_places(query, country_code, None, None)
+        return [map_location(place, cached=discovery["stored"]) for place in discovery["results"][:8]]
 
 
 PLACE_LOOKUP_POLICY_VERSION = "osm-first-v2"
@@ -1422,17 +1445,25 @@ def lookup_places(query: str, country_code: str, lat: float | None, lon: float |
     if cached_places:
         CACHE.put_place_lookup(lookup_key, context, cached_places)
         return place_discovery(rank_places_by_context(cached_places, country_code, lat, lon), "openstreetmap", "local-osm-cache", stored=True)
-    category_places = search_osm_category_places(query, country_code, lat, lon)
+    fallback_reason = "no-usable-osm-result"
+    try:
+        category_places = search_osm_category_places(query, country_code, lat, lon)
+    except ServiceError:
+        category_places = []
+        fallback_reason = "osm-provider-unavailable"
     if category_places:
         CACHE.put_place_lookup(lookup_key, context, category_places)
         return place_discovery(category_places, "openstreetmap", "osm-category-search")
-    places = search_nominatim_places(query, country_code, lat, lon)
+    try:
+        places = search_nominatim_places(query, country_code, lat, lon)
+    except ServiceError:
+        places = []
+        fallback_reason = "osm-provider-unavailable"
     if places:
         CACHE.put_places(places)
         results = rank_places_by_context(places, country_code, lat, lon)
         CACHE.put_place_lookup(lookup_key, context, results)
         return place_discovery(results, "openstreetmap", "nominatim-search")
-    fallback_reason = "no-usable-osm-result"
     saved_serp = [place for place in saved_place_matches(query, country_code) if place.get("provider") == "serpapi-google-maps"]
     if saved_serp:
         saved_serp = rank_places_by_context(saved_serp, country_code, lat, lon)[:8]

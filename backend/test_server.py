@@ -305,6 +305,54 @@ class OpenBuildingMapGeometryTests(unittest.TestCase):
 
 
 class MapLocationSearchTests(unittest.TestCase):
+    def test_cached_provider_type_lists_do_not_break_search(self) -> None:
+        self.place["providerPayload"]["type"] = ["Valley", "Tourist attraction"]
+        self.cache.put_places([self.place])
+        with mock.patch.object(server, "nominatim_search") as provider:
+            suggestions = server.suggest_map_locations("Darma Valley", "")
+            result = server.resolve_location("Darma Valley", "")
+        self.assertEqual(suggestions[0]["shortName"], "Darma valley")
+        self.assertEqual(result["shortName"], "Darma valley")
+        self.assertNotIn("providerPayload", suggestions[0])
+        provider.assert_not_called()
+        for value in [None, [], {}, 12]:
+            self.place["providerPayload"]["type"] = value
+            self.assertNotIn("placeType", server.public_place(self.place))
+        self.place["providerPayload"]["type"] = "City"
+        self.assertEqual(server.public_place(self.place)["placeType"], "city")
+
+    def test_invalid_provider_json_is_a_specific_service_error(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b'<html>unavailable</html>'
+        with mock.patch.object(server.urllib.request, "urlopen", return_value=response):
+            with self.assertRaises(server.ServiceError) as caught:
+                server.fetch_json("https://example.org/search", {}, 1)
+        self.assertEqual(caught.exception.status, 503)
+        self.assertIn("invalid JSON response", str(caught.exception))
+
+    def test_invalid_search_payload_and_records_do_not_raise_generic_errors(self) -> None:
+        with mock.patch.object(server, "fetch_json", return_value={"error": "unavailable"}):
+            with self.assertRaises(server.ServiceError) as caught:
+                server.nominatim_search("Chennai", "IN", 1)
+        self.assertEqual(caught.exception.status, 503)
+        for record in [None, "error", {"lat": "nan", "lon": "77"}, {"lat": "28", "lon": "77", "address": "invalid"}]:
+            self.assertIsNone(server.location_result(record))
+
+    def test_geocoding_and_autocomplete_fall_back_when_osm_is_unavailable(self) -> None:
+        with mock.patch.object(server, "nominatim_search", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_osm_category_places", side_effect=server.ServiceError("Unavailable", 503)), mock.patch.object(server, "search_nominatim_places", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_serp_places", return_value=[self.place]) as fallback:
+            result = server.resolve_location("Darma Valley", "IN")
+            suggestions = server.suggest_map_locations("Darma", "IN")
+        self.assertEqual(result["shortName"], "Darma valley")
+        self.assertEqual(suggestions[0]["shortName"], "Darma valley")
+        self.assertGreaterEqual(fallback.call_count, 1)
+
+    def test_total_provider_outage_preserves_specific_error(self) -> None:
+        with mock.patch.object(server, "nominatim_search", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_osm_category_places", return_value=[]), mock.patch.object(server, "search_nominatim_places", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_serp_places", side_effect=server.ServiceError("Place provider unavailable", 503)):
+            with self.assertRaises(server.ServiceError) as caught:
+                server.resolve_location("Unknown place", "")
+        self.assertEqual(str(caught.exception), "Place provider unavailable")
+        self.assertEqual(caught.exception.status, 503)
+
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

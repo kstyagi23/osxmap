@@ -5,7 +5,7 @@ const { test, before } = require('node:test');
 
 let engine;
 before(async () => {
-  const source = `${readFileSync(join(__dirname, 'studio-data.js'), 'utf8')}\n//# sourceURL=studio-data.js`;
+  const source = `${readFileSync(join(__dirname, 'map-data.js'), 'utf8')}\n//# sourceURL=map-data.js`;
   engine = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 });
 

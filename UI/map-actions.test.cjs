@@ -224,13 +224,13 @@ test('filters treat false, null, zero and missing values explicitly without eval
   assert.equal(api.filterLayer('values', 'absent', 'eq', 0).applied, false);
 });
 
-test('style reload rehydrates sources and color without depending on Explore or Studio being enabled', () => {
+test('style reload rehydrates sources and color independently of open map controls', () => {
   const { registry, api, sources, layers, app } = fixture();
   registry.execute([add('city'), add('points', collection(point(77.38, 28.56)))]);
   api.styleLayer('city', { color: 'blue' }); api.setLayerVisibility('points', false);
   const old = sources.get(actions.overlayIds('city').source);
   sources.clear(); layers.clear(); layers.set('geo-route', { id: 'geo-route', type: 'line', paint: {} });
-  app.productMode = 'explore'; app.studio = { enabled: false };
+  app.manualControlsOpen = false;
   registry.render();
   assert.notEqual(sources.get(actions.overlayIds('city').source), old);
   assert.equal(layers.get(actions.overlayIds('city').fill).paint['fill-color'], '#0000ff');
@@ -308,7 +308,7 @@ test('the combined workspace storage budget clears stale overlay persistence rat
   const { registry, api, saved } = fixture();
   registry.execute(add('small'));
   assert(saved.getItem('meridian.map-actions.v1'));
-  saved.setItem('meridian.studio.v1', 'x'.repeat(actions.MAP_ACTION_LIMITS.combinedStorageBytes / 2));
+  saved.setItem('meridian.explore.v1', 'x'.repeat(actions.MAP_ACTION_LIMITS.combinedStorageBytes / 2));
   assert.equal(api.styleLayer('small', { color: 'blue' }).applied, true);
   assert.equal(saved.getItem('meridian.map-actions.v1'), null);
   assert.match(registry.persistenceMessage, /8 MiB combined/);

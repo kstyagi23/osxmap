@@ -151,7 +151,7 @@ function setup({ mobile = false } = {}) {
   const app = Object.create(context.CityExplorer.prototype);
   app.elements = Object.fromEntries(document.querySelectorAll('[id]').map((element) => [element.id, element]));
   Object.assign(app, {
-    theme: 'dark', mapMode: 'satellite', terrainEnabled: false, productMode: 'explore',
+    theme: 'dark', mapMode: 'satellite', terrainEnabled: false, contourStrength: .55, terrainExaggeration: 1.25,
     worker: {}, country: { countryCode: 'US' }, selected: null,
     suggestionIndex: -1, suggestionController: null, searchController: null,
     geo: { pins: [], areas: [], routeStops: [], route: null, routeAnimation: null, state: {}, context: {} },
@@ -199,6 +199,19 @@ function buildingMap() {
   };
 }
 
+test('HTML and app expose only Explore without a Studio shell, navigation, import or API', () => {
+  const html = readFileSync(join(__dirname, 'index.html'), 'utf8');
+  const source = readFileSync(join(__dirname, 'app.js'), 'utf8');
+  assert.doesNotMatch(html.replace(/\?v=[^"\s]+/g, ''), /studio|data-product-mode|product-nav/i);
+  assert.doesNotMatch(source, /\bstudio\b|\bStudioWorkspace\b|\bproductMode\b|\bsetProductMode\b|data-product-mode/i);
+  const { app, document } = setup();
+  assert.equal('setProductMode' in app, false);
+  assert.equal('studio' in app, false);
+  assert(document.querySelector('button[data-workspace-view="explore"]'));
+  assert(document.querySelector('button[data-workspace-view="routes"]'));
+  assert(document.querySelector('button[data-workspace-view="workspace"]'));
+});
+
 test('display controls stay outside the sidebar after UI initialization', () => {
   const { app, document } = setup({ mobile: true });
   app.bindUi();
@@ -208,7 +221,8 @@ test('display controls stay outside the sidebar after UI initialization', () => 
     assert.equal(control.closest('.app-actions').parent, document.querySelector('.app-shell'));
     assert.equal(control.listeners.get('click').length, 1);
   }
-  assert.equal(document.querySelector('.workspace-nav').closest('.manual-sidebar'), null);
+  assert.equal(document.querySelector('.workspace-nav'), null);
+  assert(document.querySelector('.explore-utilities'));
   assert.equal(document.getElementById('search-form').closest('.manual-sidebar'), null);
   assert.equal(document.getElementById('manual-controls-content').hidden, true);
 });
@@ -1272,22 +1286,14 @@ test('server undo blocks new commands and preserves edits that arrive while awai
   assert.match(app.elements['geo-status'].textContent, /Newer local map changes were kept/);
 });
 
-test('normal-motion terrain commands synchronize Studio appearance before recording their undo guard', async () => {
+test('normal-motion terrain commands retain guarded undo without an operator workspace', async () => {
   const { app, window } = setup();
   window.matchMedia = () => ({ matches: false });
-  app.productMode = 'studio';
   app.map = { getSource: () => ({}), setTerrain() {}, easeTo() {} };
-  app.studio = {
-    workspace: { id: 'project', terrainEnabled: false },
-    snapshot() { return { ...this.workspace }; },
-    onMapAppearanceChange() { this.workspace.terrainEnabled = app.terrainEnabled; },
-    discardRedo() {}, lastAction() { return null; }, setAgentBusy() {},
-  };
   const before = app.captureMapAction();
   app.setTerrainView(true);
-  assert.equal(app.studio.workspace.terrainEnabled, true);
+  assert.equal(app.terrainEnabled, true);
   app.recordMapAction('Show 3D', before);
-  app.studio.onMapAppearanceChange();
   let restored;
   app.restoreMapAction = (value) => { restored = value; };
   await app.undoMapAction();
@@ -1295,45 +1301,38 @@ test('normal-motion terrain commands synchronize Studio appearance before record
   assert.equal(app.mapActions.length, 0);
 });
 
-test('a new outer map action invalidates stale Studio redo snapshots', () => {
-  const { app } = setup();
-  let cleared = 0;
-  app.studio = { workspace: { id: 'project' }, snapshot: () => ({ id: 'project' }), discardRedo: () => { cleared++; }, lastAction: () => null, setAgentBusy() {} };
-  app.recordMapAction('Agent created a layer', app.captureMapAction());
-  assert.equal(cleared, 1);
-});
-
-test('late startup workspace restoration cannot replace a user-selected Studio camera', async () => {
+test('late startup workspace restoration cannot replace a user-selected location', async () => {
   const { app } = setup();
   let finish;
   app.loadWorkspace = () => new Promise((resolve) => { finish = resolve; });
-  app.initializeLocationFromUrl = () => assert.fail('Automatic location restore must not run after entering Studio');
+  app.initializeLocationFromUrl = () => assert.fail('Automatic location restore must not run after a user location change');
   const work = app.bootstrap();
-  app.productMode = 'studio';
-  app.locationRevision = 1;
+  app.chooseLocation(place('User-selected city'));
+  assert.equal(app.locationRevision, 1);
   finish();
   await work;
   assert.equal(app.workspaceReady, true);
 });
 
-test('late Geo-IP results cannot move a Studio workspace after initial navigation', async () => {
+test('late Geo-IP results cannot replace a user-selected location', async () => {
   const { app, requests } = setup();
   app.initializeLocationFromUrl = () => false;
   app.applyIpLocation = () => assert.fail('Late Geo-IP must not replace the active workspace');
   const work = app.initializeLocation();
   respond(requests[0], { ip: '192.0.2.1' });
   await new Promise(setImmediate);
-  app.productMode = 'studio';
-  app.locationRevision = 1;
+  app.chooseLocation(place('User-selected city'));
+  assert.equal(app.locationRevision, 1);
   respond(requests[1], { data: { status: 'success', city: 'Test', country: 'Test', countryCode: 'US', lat: 50, lon: -3 } });
   await work;
+  assert.equal(app.selected.name, 'User-selected city');
 });
 
 test('missing population data is an actionable capability result, not a fake heatmap or retry failure', () => {
   const { app } = setup();
   app.agentRunId = 'population-run';
   app.agentResultSummary = 'Previous place results';
-  app.handleAgentEvent({ type: 'agent.limitation', runId: 'population-run', reason: 'dataset_unavailable', message: 'Import sourced geographic population values in Studio > Data, then select Heatmap and the population field.' });
+  app.handleAgentEvent({ type: 'agent.limitation', runId: 'population-run', reason: 'dataset_unavailable', message: 'Geographically distributed source observations are unavailable; no population heatmap was created.' });
   assert.equal(app.agentRunId, '');
   assert.equal(app.agentSubmitting, false);
   assert.equal(app.elements['agent-panel'].hidden, false);
@@ -1375,21 +1374,19 @@ test('web source citations render safe external links and reject executable or c
   assert.equal(app.elements['agent-sources'].querySelectorAll('img').length, 0);
 });
 
-test('a sourced dataset can open Studio and browser rejection remains visible after completion', () => {
-  const { app } = setup();
-  const layer = { name: 'Population 2011', visualization: 'heatmap' };
-  let focused = false;
-  app.studio = { applySourcedDataset: () => layer, focusLayer: () => { focused = true; }, lastAction: () => null };
-  app.setProductMode = (mode) => { app.productMode = mode; };
-  assert.equal(app.applyAgentMapUpdate({ dataset: { data: {} } }), true);
-  assert.equal(app.productMode, 'studio');
-  assert.equal(focused, true);
-  assert.equal(app.agentResultSummary, 'Population 2011 / sourced heatmap');
-  app.studio.applySourcedDataset = () => { throw new Error('No features in scope'); };
-  assert.equal(app.applyAgentMapUpdate({ dataset: { data: {} } }), false);
-  app.showCommandResult(app.agentResultSummary, 'Dataset queued.');
-  const text = (node) => [node.textContent, ...node.children.flatMap(text)].join(' ');
-  assert.match(text(app.elements['agent-response']), /not applied.*No features in scope/);
+test('removed dataset and Studio update keys reject the entire update without mutation', () => {
+  const { app, add, api } = overlaySetup();
+  api.addLayer(add.layer);
+  app.geo.pins = [place('Saved pin')];
+  const before = JSON.stringify(app.captureMapAction());
+  for (const key of ['dataset', 'studio']) {
+    for (const accompanying of [{}, { clear: true }, { actions: [{ action: 'style_layer', layerId: 'city', style: { color: 'blue' } }] }]) {
+      assert.equal(app.applyAgentMapUpdate({ [key]: { data: {} }, ...accompanying }), false);
+      assert.match(app.agentApplicationError, new RegExp(`Unknown map update key "${key}"`));
+      assert.equal(JSON.stringify(app.captureMapAction()), before);
+      assert.equal(api.getLayers()[0].style.color, '#ff0000');
+    }
+  }
 });
 
 test('plot, make, generate and map requests use the agent instead of city geocoding', async () => {
@@ -1473,7 +1470,6 @@ test('Explore agent.map declarative actions create visibly red geometry and expo
   app.agentRunId = 'highlight';
   app.agentSnapshot = app.captureMapAction();
   app.handleAgentEvent({ type: 'agent.map', runId: 'highlight', update: { actions: [add] } });
-  assert.equal(app.productMode, 'explore');
   assert.equal(app.agentDidMutate, true);
   assert.equal(layers.get(mapActions.overlayIds('city').fill).paint['fill-color'], '#ff0000');
   assert.equal(layers.get(mapActions.overlayIds('city').outline).paint['line-color'], '#ff0000');
@@ -1504,33 +1500,27 @@ test('invalid or unknown agent action batches have no mutations and their visual
   assert.equal(app.applyAgentMapUpdate({}), false);
 });
 
-test('mixed sourced datasets do not skip declared actions and invalid mixed batches apply neither branch', () => {
+test('mixed geographic updates do not skip declared actions and invalid batches apply neither branch', () => {
   const { app, add, api, layers } = overlaySetup();
-  let datasets = 0;
-  app.studio = { workspace: { id: 'workspace' }, snapshot: () => ({ id: 'workspace' }), applySourcedDataset: () => { datasets++; return { name: 'Population', visualization: 'heatmap' }; }, focusLayer() {}, lastAction: () => null, setAgentBusy() {}, discardRedo() {} };
-  app.setProductMode = (mode) => { app.productMode = mode; };
-  assert.equal(app.applyAgentMapUpdate({ dataset: { data: {} }, actions: [add] }), true);
-  assert.equal(datasets, 1);
-  assert.equal(app.productMode, 'studio');
+  assert.equal(app.applyAgentMapUpdate({ researchArea: studyExtent(), actions: [add] }), true);
+  assert.equal(app.researchArea.name, 'Noida');
   assert.equal(api.getLayers().length, 1);
   assert.equal(layers.get(mapActions.overlayIds('city').fill).paint['fill-color'], '#ff0000');
-  assert.equal(app.applyAgentMapUpdate({ dataset: { data: {} }, actions: [{ action: 'style_layer', layerId: 'city', style: { color: 'expression' } }] }), false);
-  assert.equal(datasets, 1);
+  assert.equal(app.applyAgentMapUpdate({ researchArea: { ...studyExtent(), name: 'Rejected extent' }, actions: [{ action: 'style_layer', layerId: 'city', style: { color: 'expression' } }] }), false);
+  assert.equal(app.researchArea.name, 'Noida');
   assert.equal(api.getLayers()[0].style.color, '#ff0000');
 });
 
-test('a failed mixed action application restores its Studio snapshot and existing overlay color', () => {
+test('a failed mixed action application restores geographic state and existing overlay color', () => {
   const { app, add, api } = overlaySetup();
   api.addLayer(add.layer);
-  let studioState = { id: 'workspace', layerCount: 1 };
-  app.studio = { workspace: studioState, snapshot: () => ({ ...studioState }), applySourcedDataset: () => { studioState.layerCount++; return { name: 'New data', visualization: 'points' }; }, restoreSnapshot: (state) => { studioState = state; }, stopCompare() {}, focusLayer() {}, lastAction: () => null, setAgentBusy() {} };
-  app.setProductMode = (mode) => { app.productMode = mode; };
-  app.productMode = 'studio';
+  app.applyAgentMapUpdate({ researchArea: { ...studyExtent(), name: 'Original extent' } });
+  const before = JSON.stringify(app.captureMapAction());
   const jump = app.map.jumpTo;
   let fail = true;
   app.map.jumpTo = (camera) => { if (fail) { fail = false; throw new Error('Injected camera failure'); } jump(camera); };
-  assert.equal(app.applyAgentMapUpdate({ dataset: { data: {} }, actions: [{ action: 'style_layer', layerId: 'city', style: { color: 'blue' } }, { action: 'set_view', center: [0, 0] }] }), false);
-  assert.equal(studioState.layerCount, 1);
+  assert.equal(app.applyAgentMapUpdate({ researchArea: { ...studyExtent(), name: 'New extent' }, actions: [{ action: 'style_layer', layerId: 'city', style: { color: 'blue' } }, { action: 'set_view', center: [0, 0] }] }), false);
+  assert.equal(JSON.stringify(app.captureMapAction()), before);
   assert.equal(api.getLayers()[0].style.color, '#ff0000');
   assert.match(app.agentApplicationError, /rolled back/);
 });
@@ -1614,14 +1604,13 @@ test('study extent previews are truthful polygons and preserve existing map cont
   app.searchResults = [place('Earlier result')];
   const beforeGeo = JSON.stringify(app.geo);
   app.chooseLocation = () => assert.fail('A study preview must not reset map context');
-  layers.set('studio-existing-heat', { id: 'studio-existing-heat', type: 'heatmap' });
+  layers.set('existing-overlay', { id: 'existing-overlay', type: 'fill' });
   const area = studyExtent();
   assert.equal(app.applyAgentMapUpdate({ researchArea: area, view: { bounds: area.bounds } }), true);
   assert.equal(JSON.stringify(app.geo), beforeGeo);
   assert.equal(app.geo.pins, pins);
   assert.equal(app.searchResults.length, 1);
-  assert.equal(app.productMode, 'explore');
-  assert.equal(layers.has('studio-existing-heat'), true);
+  assert.equal(layers.has('existing-overlay'), true);
   const feature = sources.get('local-research-area').data.features[0];
   assert.equal(feature.geometry.type, 'Polygon');
   assert.equal(feature.properties.kind, 'study-extent');
@@ -1695,7 +1684,6 @@ test('partial research keeps the study extent and offers local undo without inve
   assert.match(app.elements['agent-task-label'].textContent, /Study extent shown/);
   app.handleAgentEvent({ type: 'agent.limitation', runId: app.agentRunId, reason: 'dataset_unavailable', contextOnly: true, message: 'The source could not provide a usable raster window.' });
   assert.equal(sources.has('local-research-area'), true);
-  assert.equal(app.productMode, 'explore');
   assert.equal(app.searchResults.length, 0);
   assert.match(app.elements['agent-result-summary'].textContent, /Study area shown.*data unavailable/);
   assert.match(app.agentActivity.tool, /Study extent kept.*no data layer/);
@@ -1720,29 +1708,29 @@ test('cancelled, failed and rolled-back runs restore preview state with the orig
   }
 });
 
-test('browser dataset rejection is not announced as an applied map update or successful completion', () => {
-  const { app } = setup();
-  app.studio = { applySourcedDataset() { throw new Error('No source observations in scope'); }, snapshot: () => null, lastAction: () => null, setAgentBusy() {} };
-  app.agentRunId = 'rejected-run';
-  app.agentSnapshot = app.captureMapAction();
-  app.agentDidMutate = false;
-  app.handleAgentEvent({ type: 'agent.map', runId: app.agentRunId, update: { dataset: { data: {} } } });
-  assert.equal(app.productMode, 'explore');
-  assert.equal(app.agentDidMutate, false);
-  assert.match(app.elements['agent-task-label'].textContent, /not applied.*No source observations/);
-  assert.notEqual(app.agentActivity.tool, 'Map changes applied');
-  app.handleAgentEvent({ type: 'agent.completed', runId: app.agentRunId, message: 'The source heatmap was sent for display.' });
-  assert.match(app.elements['agent-result-summary'].textContent, /not applied.*No source observations/);
-  assert.equal(app.elements['agent-result-details'].open, true);
-  assert.equal(app.agentActivity.tool, 'Map not fully applied');
-  assert.equal(app.mapActions?.length || 0, 0);
+test('removed update keys are not announced as an applied map update or successful completion', () => {
+  for (const key of ['dataset', 'studio']) {
+    const { app } = setup();
+    app.agentRunId = 'rejected-run';
+    app.agentSnapshot = app.captureMapAction();
+    app.agentDidMutate = false;
+    app.handleAgentEvent({ type: 'agent.map', runId: app.agentRunId, update: { [key]: { data: {} } } });
+    assert.equal(app.agentDidMutate, false);
+    assert.match(app.elements['agent-task-label'].textContent, new RegExp(`not applied.*Unknown map update key "${key}"`));
+    assert.notEqual(app.agentActivity.tool, 'Map changes applied');
+    app.handleAgentEvent({ type: 'agent.completed', runId: app.agentRunId, message: 'The source visualization was sent for display.' });
+    assert.match(app.elements['agent-result-summary'].textContent, new RegExp(`not applied.*Unknown map update key "${key}"`));
+    assert.equal(app.elements['agent-result-details'].open, true);
+    assert.equal(app.agentActivity.tool, 'Map not fully applied');
+    assert.equal(app.mapActions?.length || 0, 0);
+  }
 });
 
 test('dismissing a completed map result keeps idle suggestions out of the map', () => {
   const { app } = setup();
   app.searchFocused = true;
   app.elements['search-input'].value = '';
-  app.agentResultSummary = 'Sourced heatmap applied';
+  app.agentResultSummary = 'Geographic overlay applied';
   app.agentHasReply = true;
   app.dismissAgentResult();
   assert.equal(app.elements['search-input'].focused, true);

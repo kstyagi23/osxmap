@@ -1,6 +1,4 @@
 import { AGENT_SOCKET_URL, API_BASE_URL, apiPath } from './config.js';
-import { MeridianStudio } from './studio.js';
-import * as MeridianStudioData from './studio-data.js';
 import { MeridianMapActions, MAP_ACTION_NAMES } from './map-actions.js';
 
 const TILE_ZOOM = 14;
@@ -384,7 +382,7 @@ function applyMonochrome(map, theme, mode = 'route') {
   if (!originalFillOpacity.has(map)) originalFillOpacity.set(map, new Map());
   const fillOpacity = originalFillOpacity.get(map);
   for (const layer of map.getStyle().layers || []) {
-    if (/^(?:local-|geo-|studio-|agent-overlay-)/.test(layer.id)) continue;
+    if (/^(?:local-|geo-|agent-overlay-)/.test(layer.id)) continue;
     const id = layer.id.toLowerCase();
     try {
       map.setLayoutProperty(layer.id, 'visibility', satellite && layer.type === 'fill-extrusion' ? 'none' : 'visible');
@@ -534,7 +532,6 @@ class CityExplorer {
     this.elements = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
     this.theme = preference('theme', 'dark');
     this.mapMode = ['satellite', 'route', 'terrain'].includes(preference('mapMode')) ? preference('mapMode') : 'satellite';
-    this.productMode = 'explore';
     this.workspaceView = 'explore';
     this.viewMode = false;
     this.country = { country: '', countryCode: '', method: 'detecting' };
@@ -597,10 +594,8 @@ class CityExplorer {
     this.createMap();
     this.overlayActions = new MeridianMapActions(this);
     window.MeridianMap = this.overlayActions.publicAPI();
-    window.MeridianStudioData = MeridianStudioData;
     if (this.map.isStyleLoaded()) this.overlayActions.render();
     this.renderMapActionLegend();
-    this.studio = new MeridianStudio(this);
     this.bootstrap();
     this.connectAgentSocket();
     this.updateDashboard();
@@ -678,7 +673,6 @@ class CityExplorer {
       this.refreshMapMetadata();
     }));
     document.querySelectorAll('button[data-workspace-view]').forEach((button) => button.addEventListener('click', () => this.setWorkspaceView(button.dataset.workspaceView)));
-    document.querySelectorAll('button[data-product-mode]').forEach((button) => button.addEventListener('click', () => this.setProductMode(button.dataset.productMode)));
     document.querySelectorAll('[data-open-routes]').forEach((button) => button.addEventListener('click', () => this.setWorkspaceView('routes')));
     document.querySelectorAll('[data-layer-toggle]').forEach((button) => button.addEventListener('click', () => this.toggleMapLayer(button.dataset.layerToggle)));
     el['contour-strength'].addEventListener('input', () => {
@@ -739,7 +733,6 @@ class CityExplorer {
       this.elevationController?.abort();
       this.imageryMetadataController?.abort();
       this.terrainPointController?.abort();
-      this.studio?.destroy();
       this.overlayActions?.save();
       this.saveExploreState();
       window.cancelAnimationFrame(this.contourFrame);
@@ -768,7 +761,6 @@ class CityExplorer {
     document.documentElement.dataset.sidebar = open ? 'open' : 'closed';
     toggle.setAttribute('aria-expanded', String(open));
     this.elements['manual-controls-content'].hidden = !open;
-    if (open && this.productMode === 'studio') this.studio?.setPane('left');
   }
 
   setInfoDrawerOpen(open) {
@@ -780,7 +772,6 @@ class CityExplorer {
     toggle.setAttribute('aria-expanded', String(open));
     toggle.setAttribute('aria-label', `${open ? 'Collapse' : 'Expand'} map details`);
     if (open && window.innerWidth <= 900) this.setManualControlsOpen(false);
-    if (open && window.innerWidth <= 1100) this.studio?.closePanels();
     if (open) navigator.serviceWorker?.controller?.postMessage({ type: 'map-cache-stats' });
     if (open) {
       this.updateDashboard();
@@ -805,7 +796,7 @@ class CityExplorer {
       selected: this.selected, mapMode: this.mapMode, theme: this.theme, terrainEnabled: this.terrainEnabled,
       layerPreferences: this.layerPreferences, contourStrength: this.contourStrength, terrainExaggeration: this.terrainExaggeration,
       geo: { ...this.geo, routeAnimation: null, routeStops: this.routePlan().map((stop) => ({ ...stop, suggestions: [] })) },
-      searchResults: this.searchResults, researchArea: this.researchArea, studio: this.studio?.snapshot(), comparing: Boolean(this.studio?.compareMap),
+      searchResults: this.searchResults, researchArea: this.researchArea,
     }));
     // Frozen overlay datasets are shared across history instead of repeatedly cloning geometry.
     if (this.overlayActions) snapshot.overlays = this.overlayActions.captureSnapshot();
@@ -814,7 +805,6 @@ class CityExplorer {
 
   recordMapAction(label, before, options = {}) {
     if (!before) return;
-    if (before.studio?.id === this.studio?.workspace.id) this.studio?.discardRedo();
     this.mapActions ||= [];
     this.mapActions.push({ label: String(label).slice(0, 120), before, guard: this.mapActionGuard(), cameraRevision: this.cameraInteractionRevision || 0, time: Date.now(), ...options });
     if (this.mapActions.length > 20) this.mapActions.shift();
@@ -822,33 +812,26 @@ class CityExplorer {
   }
 
   mapActionGuard() {
-    const studio = this.studio?.snapshot();
-    if (studio) { delete studio.camera; delete studio.updatedAt; delete studio.selectedLayerId; delete studio.scope; }
     return JSON.stringify({
       selected: this.selected, pins: this.geo.pins, areas: this.geo.areas, route: this.geo.route,
       stops: this.routePlan().map((stop) => ({ query: stop.query, place: stop.place })), searchResults: this.searchResults, researchArea: this.researchArea,
       mapMode: this.mapMode, theme: this.theme, contourStrength: this.contourStrength, terrainEnabled: this.terrainEnabled, terrainExaggeration: this.terrainExaggeration,
-      preferences: this.layerPreferences, studio, overlays: this.overlayActions?.guard(),
+      preferences: this.layerPreferences, overlays: this.overlayActions?.guard(),
     });
   }
 
   updateActionChip() {
     const action = this.mapActions?.at(-1);
-    const studioAction = this.studio?.lastAction();
-    const latest = studioAction && (!action || studioAction.time > action.time) ? studioAction : action;
     const chip = this.elements['action-history-chip'];
     if (!chip) return;
-    chip.hidden = !latest;
-    this.elements['action-history-label'].textContent = latest?.label || '';
+    chip.hidden = !action;
+    this.elements['action-history-label'].textContent = action?.label || '';
     this.elements['action-history-undo'].disabled = Boolean(this.agentSubmitting || this.agentRunId || this.undoing);
-    this.studio?.setAgentBusy(Boolean(this.agentSubmitting || this.agentRunId || this.undoing));
   }
 
   async undoMapAction() {
     if (this.agentSubmitting || this.agentRunId || this.undoing) return;
     const action = this.mapActions?.at(-1);
-    const studioAction = this.studio?.lastAction();
-    if (studioAction && (!action || studioAction.time > action.time)) return this.studio.undo();
     if (!action) return this.setGeoStatus('There is no map action to undo.');
     if (action.guard && action.guard !== this.mapActionGuard()) return this.setGeoStatus('This action cannot overwrite more recent manual map changes. Undo those changes first or keep the current state.', true);
     this.undoing = true;
@@ -896,8 +879,6 @@ class CityExplorer {
         this.applyMapMode();
         if (snapshot.camera) this.map.jumpTo(snapshot.camera);
       }
-      if (snapshot.studio) this.studio?.restoreSnapshot(snapshot.studio, { restoreCamera: false });
-      if (!snapshot.comparing) this.studio?.stopCompare();
       if (this.overlayActions) {
         const result = this.overlayActions.restoreSnapshot(snapshot.overlays || { version: 1, layers: [] });
         if (!result.applied) throw new Error(result.reason);
@@ -947,7 +928,7 @@ class CityExplorer {
   saveExploreState() {
     if (this.applyingMapActions || this.applyingAgentMap || this.agentSubmitting || this.agentRunId || this.restoringAction) return;
     if (this.map) savePreference('mapMode', this.mapMode);
-    if (!this.workspaceReady || this.productMode === 'studio' || !this.map?.getCenter) return;
+    if (!this.workspaceReady || !this.map?.getCenter) return;
     const center = this.map.getCenter();
     const saved = savePreference('meridian.explore.v1', JSON.stringify({
       camera: { center: [center.lng, center.lat], zoom: this.map.getZoom(), pitch: this.map.getPitch(), bearing: this.map.getBearing() },
@@ -971,7 +952,7 @@ class CityExplorer {
       try { await postJson('/api/workspace/state', { state }); }
       catch {
         if (this.workspaceSaveKey === key) this.workspaceSaveKey = '';
-        this.setGeoStatus('Map service could not save the active route. Your current map remains usable; Studio exports are available locally.', true);
+        this.setGeoStatus('Map service could not save the active route. Your current map remains usable.', true);
       }
     });
   }
@@ -982,7 +963,7 @@ class CityExplorer {
     const legendSpace = this.overlayActions?.layers.length && this.elements['map-overlay-legend']?.hidden ? 56 : 0;
     const bottom = Math.max(110, stack ? height - stack.top + 24 + legendSpace : 150);
     if (window.innerWidth <= 900) return { top: Math.min(200, height * .28), left: 24, right: 24, bottom: Math.min(height * .48, bottom) };
-    return { top: 110, left: this.productMode === 'studio' ? 420 : this.manualControlsOpen ? 420 : 48, right: this.productMode === 'studio' ? 360 : 48, bottom: Math.min(height * .4, bottom) };
+    return { top: 110, left: this.manualControlsOpen ? 420 : 48, right: 48, bottom: Math.min(height * .4, bottom) };
   }
 
   renderMapActionLegend() {
@@ -1140,13 +1121,7 @@ class CityExplorer {
     this.agentApplicationError = '';
     this.renderAgentSources([]);
     const normalized = query.toLowerCase().trim().replace(/[.!]$/, '');
-    if (normalized === 'open studio' || normalized === 'switch to studio') {
-      this.setProductMode('studio');
-      this.showCommandResult('Studio workspace opened', 'The camera and existing map tools are preserved. Import a dataset or capture loaded map data to begin.');
-      return true;
-    }
     if (normalized === 'undo') { this.undoMapAction(); return true; }
-    if (normalized === 'redo' && this.productMode === 'studio') { this.studio?.redo(); return true; }
     if (/\b(?:slope|aspect|viewshed|elevation profile|elevation gain|roads above|roads below)\b/.test(normalized)) {
       this.showCommandResult('Terrain analysis is not available yet', 'Meridian can show relief, contours, and sampled point elevations. Slope, aspect, elevation profiles, and elevation-filtered roads require terrain analysis that this map service does not currently provide.');
       return true;
@@ -1209,7 +1184,7 @@ class CityExplorer {
 
   layerMatchesPreference(layer, name) {
     const id = layer.id.toLowerCase();
-    if (/^(?:geo-|studio-|agent-overlay-|local-search-result|local-city-focus)/.test(id)) return false;
+    if (/^(?:geo-|agent-overlay-|local-search-result|local-city-focus)/.test(id)) return false;
     return name === 'labels' ? layer.type === 'symbol'
       : name === 'buildings' ? /building|local-selection|local-hover/.test(id)
       : name === 'roads' ? /road|highway|bridge|tunnel|transportation/.test(id)
@@ -1264,7 +1239,6 @@ class CityExplorer {
     document.querySelector('.floating-search').setAttribute('aria-busy', String(active));
     this.setLoading(Boolean(this.searchLoading));
     this.updateSearchDiscovery();
-    this.studio?.setAgentBusy(active);
   }
 
   connectAgentSocket() {
@@ -1548,7 +1522,6 @@ class CityExplorer {
       routeStops: this.routePlan().filter((stop) => stop.place).slice(0, 12).map((stop) => point(stop.place)).filter(Boolean),
       pins: this.geo.pins.slice(0, 20).map((pin) => point(pin)).filter(Boolean),
       areas: this.geo.areas.slice(0, 8).map((area) => ({ id: String(area.id || '').slice(0, 80), label: String(area.label || '').slice(0, 160), areaSquareMeters: numeric(area.summary?.areaSquareMeters), bounds: areaBounds(area) })).filter((area) => area.bounds),
-      ...(this.productMode === 'studio' ? this.studio?.agentContext() : {}),
       mapActions: this.overlayActions?.context() || { version: 1, layers: [], capabilities: [...MAP_ACTION_NAMES] },
     };
   }
@@ -1695,7 +1668,7 @@ class CityExplorer {
       this.setGeoStatus(this.agentApplicationError, true);
       return false;
     };
-    const allowed = ['actions', 'dataset', 'studio', 'clear', 'researchArea', 'selectedCity', 'places', 'routeStops', 'route', 'workspace', 'view'];
+    const allowed = ['actions', 'clear', 'researchArea', 'selectedCity', 'places', 'routeStops', 'route', 'workspace', 'view'];
     if (!Object.keys(update).length) return reject('No map changes were declared.');
     if (this.applyingAgentMap && this.agentLocalConflict) return reject('Manual map changes occurred during this request. Later agent updates were not applied.');
     for (const key of Object.keys(update)) if (!allowed.includes(key)) return reject(`Unknown map update key "${key}".`);
@@ -1708,16 +1681,16 @@ class CityExplorer {
     const mixed = Object.keys(legacy).length > 0;
     if (mixed) { try { this.overlayActions.prepare(actions); } catch (error) { return reject(error.message); } }
     const before = mixed ? this.captureMapAction() : null;
-    const mode = this.productMode, workspace = this.workspaceView;
+    const workspace = this.workspaceView;
     try {
-      if (mixed && !this.applyLegacyAgentMapUpdate(legacy)) throw new Error(this.agentApplicationError || 'The accompanying dataset or map update was rejected.');
+      if (mixed && !this.applyLegacyAgentMapUpdate(legacy)) throw new Error(this.agentApplicationError || 'The accompanying map update was rejected.');
       const result = this.overlayActions.execute(actions, { fromAgent: true });
       if (!result.applied) throw new Error(result.reason);
       this.agentResultSummary = mixed ? this.agentResultSummary : `${result.actionCount} map action${result.actionCount === 1 ? '' : 's'} applied${result.layerIds.length ? ` / ${result.layerIds.length} overlay${result.layerIds.length === 1 ? '' : 's'}` : ''}`;
       return true;
     } catch (error) {
       if (before) {
-        try { this.restoreMapAction(before); if (this.productMode !== mode) this.setProductMode(mode); if (this.workspaceView !== workspace) this.setWorkspaceView(workspace); }
+        try { this.restoreMapAction(before); if (this.workspaceView !== workspace) this.setWorkspaceView(workspace); }
         catch (restoreError) { return reject(`${error.message} Restoration is pending: ${restoreError.message}`); }
       }
       return reject(error.message);
@@ -1725,36 +1698,6 @@ class CityExplorer {
   }
 
   applyLegacyAgentMapUpdate(update) {
-    if (update.dataset) {
-      try {
-        const layer = this.studio?.applySourcedDataset(update.dataset);
-        if (!layer) throw new Error('Studio could not load the source dataset.');
-        if (this.productMode !== 'studio') {
-          this.setProductMode('studio');
-          this.studio.focusLayer(layer);
-        }
-        this.agentResultSummary = `${layer.name} / sourced ${layer.visualization}`;
-        return true;
-      } catch (error) {
-        this.agentApplicationError = `The sourced dataset was not applied: ${error.message}`;
-        this.agentResultSummary = this.agentApplicationError;
-        this.setGeoStatus(this.agentApplicationError, true);
-        return false;
-      }
-    }
-    if (update.studio) {
-      try {
-        if (!this.studio) throw new Error('Studio is unavailable.');
-        this.studio.applyOperation(update.studio, { fromAgent: true });
-        this.agentResultSummary = 'Studio updated from the loaded dataset';
-        return true;
-      } catch (error) {
-        this.agentApplicationError = `Studio operation was not applied: ${error.message}`;
-        this.agentResultSummary = this.agentApplicationError;
-        this.setGeoStatus(this.agentResultSummary, true);
-        return false;
-      }
-    }
     if (update.clear === true) {
       this.clearWorkspaceLocal(false);
       this.setGeoStatus('The map agent cleared the workspace.');
@@ -1799,7 +1742,6 @@ class CityExplorer {
     this.renderWorkspace();
     this.renderGeography();
     this.renderSearchResults();
-    if (this.productMode === 'studio') this.studio?.captureAgentArtifacts(update);
     this.updateIntroCard();
     const route = this.geo.route;
     const fitted = this.applyAgentView(update.view);
@@ -1832,7 +1774,6 @@ class CityExplorer {
       this.renderGeography();
       this.renderSearchResults();
       this.renderResearchArea();
-      this.studio?.renderMap();
       try { this.overlayActions?.render({ force: true }); } catch (error) { this.showMapNotice(`Map overlays could not render: ${error.message}`); }
       this.renderMapActionLegend();
       this.refreshMapMetadata();
@@ -1898,7 +1839,6 @@ class CityExplorer {
       this.operate('reset');
     });
     this.map.on('click', (event) => {
-      if (this.studio?.handleMapClick(event)) return;
       if (this.viewMode || (!this.pinMode && (this.mapMode !== 'terrain' || this.workspaceView !== 'explore'))) return;
       const interactiveLayers = [PREVIEW_LAYER, 'local-buildings', 'local-buildings-inferred', 'local-poi-marker', 'local-search-result', 'geo-pin', 'geo-route-stop', 'geo-area-fill']
         .filter((layer) => this.map.getLayer(layer));
@@ -1959,7 +1899,6 @@ class CityExplorer {
     this.updateDashboard();
     this.applyLayerPreferences();
     this.refreshMapMetadata();
-    this.studio?.onMapAppearanceChange();
   }
 
   updateSatelliteImagery() {
@@ -2011,20 +1950,6 @@ class CityExplorer {
     this.saveExploreState();
   }
 
-  setProductMode(mode) {
-    if (!['explore', 'studio'].includes(mode) || mode === this.productMode) return;
-    this.locationRevision = (this.locationRevision || 0) + 1;
-    if (this.productMode === 'explore') this.saveExploreState();
-    this.productMode = mode;
-    document.documentElement.dataset.productMode = mode;
-    document.querySelectorAll('button[data-product-mode]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.productMode === mode)));
-    this.setWorkspaceView('explore');
-    this.studio?.activate(mode === 'studio');
-    this.overlayActions?.render();
-    this.renderMapActionLegend();
-    this.updateActionChip();
-  }
-
   setWorkspaceView(view) {
     if (!['explore', 'routes', 'workspace'].includes(view)) return;
     this.workspaceView = view;
@@ -2042,8 +1967,6 @@ class CityExplorer {
     if (view === 'routes') this.setMapMode('route');
     document.getElementById('controls-label').textContent = view === 'routes' ? 'Plan a route' : view === 'workspace' ? 'Your workspace' : 'Map controls';
     document.documentElement.dataset.workspaceView = view;
-    document.documentElement.dataset.studioLegacy = String(this.productMode === 'studio' && view !== 'explore');
-    if (this.productMode === 'studio') this.studio?.setPane('left');
     this.updateDashboard();
   }
 
@@ -2092,7 +2015,7 @@ class CityExplorer {
     replay.hidden = !this.geo.route || !this.routeSearchEdges(this.geo.route).length;
     replay.textContent = this.geo.routeAnimation ? 'Stop replay' : 'Replay calculation';
     set('view-location', this.selected?.name || 'San Francisco Bay Area');
-    set('view-title', this.workspaceView === 'routes' ? 'Route Planner' : this.workspaceView === 'workspace' ? 'Saved Places' : this.productMode === 'studio' ? this.studio?.workspace.name || 'Studio workspace' : this.mapMode === 'terrain' ? 'Terrain Explorer' : 'City Explorer');
+    set('view-title', this.workspaceView === 'routes' ? 'Route Planner' : this.workspaceView === 'workspace' ? 'Saved Places' : this.mapMode === 'terrain' ? 'Terrain Explorer' : 'City Explorer');
     set('view-mode-label', this.mapMode === 'satellite' ? 'Satellite imagery' : this.mapMode === 'route' ? 'Monochrome / Streets' : 'Topographic / Contours in meters');
     if (center) set('map-coordinates', `${Math.abs(center.lat).toFixed(4)} ${center.lat < 0 ? 'S' : 'N'} / ${Math.abs(center.lng).toFixed(4)} ${center.lng < 0 ? 'W' : 'E'}`);
     const inspected = this.inspectedCoordinate || center;
@@ -2129,7 +2052,7 @@ class CityExplorer {
     const desktop = window.innerWidth > 700;
     const sidebarRight = document.querySelector('.manual-sidebar').getBoundingClientRect().right;
     const top = desktop ? (window.innerWidth <= 1280 ? 160 : 96) : 180;
-    this.map.fitBounds(bounds, { padding: desktop ? { top, left: sidebarRight + 24, right: this.productMode === 'studio' ? 350 : 40, bottom: 260 } : { top, right: 24, bottom: Math.min(280, window.innerHeight * .35), left: 24 }, pitch: 0, maxZoom: 16, duration: motionDuration(450) });
+    this.map.fitBounds(bounds, { padding: desktop ? { top, left: sidebarRight + 24, right: 40, bottom: 260 } : { top, right: 24, bottom: Math.min(280, window.innerHeight * .35), left: 24 }, pitch: 0, maxZoom: 16, duration: motionDuration(450) });
   }
 
   addTerrainSource() {
@@ -2165,7 +2088,6 @@ class CityExplorer {
     this.terrainEnabled = enabled;
     this.terrainExaggeration = exaggeration;
     this.applyTerrain(strict);
-    this.studio?.onMapAppearanceChange();
     this.map.easeTo({ pitch: this.terrainEnabled ? 60 : 0, duration: motionDuration(duration) });
     this.saveExploreState();
     return true;
@@ -2186,7 +2108,7 @@ class CityExplorer {
   async bootstrap() {
     const revision = this.locationRevision || 0;
     await this.loadWorkspace(false);
-    if (this.productMode !== 'explore' || (this.locationRevision || 0) !== revision) {
+    if ((this.locationRevision || 0) !== revision) {
       this.workspaceReady = true;
       return;
     }
@@ -2235,11 +2157,11 @@ class CityExplorer {
     this.setGeoStatus('Opening your approximate Geo-IP location...');
     try {
       const detected = await ipLocation();
-      if (this.productMode !== 'explore' || (this.locationRevision || 0) !== revision) return;
+      if ((this.locationRevision || 0) !== revision) return;
       this.applyIpLocation(detected, { immediate: true });
       this.setGeoStatus('');
     } catch {
-      if (this.productMode !== 'explore' || (this.locationRevision || 0) !== revision) return;
+      if ((this.locationRevision || 0) !== revision) return;
       this.detectCountry();
       this.setGeoStatus('Geo-IP location is unavailable. Search for a place to set the map anchor.', true);
     }
@@ -2351,7 +2273,6 @@ class CityExplorer {
       this.renderSuggestions([]);
       this.setSearchStatus('');
       this.setLoading(false);
-      if (this.studio?.handleInstruction(query)) return;
       if (this.applyLocalInstruction(query)) return;
       return this.startAgentRequest(query);
     }
@@ -2921,7 +2842,7 @@ class CityExplorer {
   }
 
   showBuilding(event) {
-    if (this.viewMode || this.studio?.tool) return;
+    if (this.viewMode) return;
     const feature = event.features?.[0];
     if (!feature) return;
     const properties = feature.properties || {};
@@ -2981,7 +2902,7 @@ class CityExplorer {
   }
 
   showPoi(event) {
-    if (this.viewMode || this.studio?.tool) return;
+    if (this.viewMode) return;
     const feature = event.features?.[0];
     if (!feature) return;
     const content = document.createElement('div');
@@ -3013,7 +2934,6 @@ class CityExplorer {
   }
 
   selectSearchResult(event) {
-    if (this.studio?.tool) return;
     const feature = event.features?.[0];
     const coordinates = feature?.geometry?.coordinates;
     if (!feature || !Array.isArray(coordinates) || coordinates.length < 2) return;
@@ -3755,10 +3675,9 @@ class CityExplorer {
       return;
     }
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.tagName?.toLowerCase() === 'select' || target?.isContentEditable) return;
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
       event.preventDefault();
-      if (event.shiftKey && this.productMode === 'studio') this.studio?.redo();
-      else this.undoMapAction();
+      this.undoMapAction();
       return;
     }
     if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -3774,7 +3693,6 @@ class CityExplorer {
       return;
     }
     if (event.key === 'Escape') {
-      if (this.studio?.handleEscape()) { event.preventDefault(); return; }
       if (this.terrainPointPopup) this.terrainPointPopup.remove();
       else if (document.getElementById('info-drawer-content').hidden === false) this.setInfoDrawerOpen(false);
       else if (this.agentRunId || this.agentSubmitting) this.cancelAgentRequest();

@@ -67,6 +67,7 @@ STUDIO_ACTIONS = ("visualize", "filter", "summarize", "hotspots", "compare", "du
 STUDIO_VISUALIZATIONS = ("points", "density", "heatmap", "choropleth", "contours", "extrusion", "flow", "surface", "tactical")
 STUDIO_PALETTES = ("monochrome", "olive", "thermal", "ocean", "violet")
 MAX_CONTEXT_BYTES = 24_000
+RETIRED_TOOL_NAMES = frozenset({"studio_operation", "load_web_dataset", "load_population", "load_raster_dataset", "map_source_table"})
 
 
 @dataclass(frozen=True)
@@ -232,7 +233,7 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "report_limitation",
-            "description": "Finish honestly after trying relevant data readers and sources. For population, try load_population before concluding no dataset is available. Retains an explicitly labeled study-area preview, not a fabricated statistical layer; other failed mutations are rolled back.",
+            "description": "Report unavailable analytical dataset visualization or a concrete research/geometry limitation honestly. No dataset acquisition is required for unavailable visualization. Retains a labeled study-area preview; other failed mutations are rolled back.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -445,6 +446,9 @@ AGENT_TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+AGENT_TOOL_SCHEMAS = [tool for tool in AGENT_TOOL_SCHEMAS if tool["function"]["name"] not in RETIRED_TOOL_NAMES]
+
+
 class AgentTools:
     """Executes a fixed tool allowlist and returns client-safe, bounded values."""
 
@@ -473,7 +477,6 @@ class AgentTools:
             "search_places": self._search_places,
             "plan_route": self._plan_route,
             "present_map": self._present_map,
-            "studio_operation": self._studio_operation,
             "highlight_city": self._highlight_city,
             "highlight_roads": self._highlight_roads,
             "plot_points": self._plot_points,
@@ -482,10 +485,6 @@ class AgentTools:
             "report_limitation": self._report_limitation,
             "search_web": self._search_web,
             "read_web_source": self._read_web_source,
-            "load_web_dataset": self._load_web_dataset,
-            "load_population": self._load_population,
-            "load_raster_dataset": self._load_raster_dataset,
-            "map_source_table": self._map_source_table,
             "clear_map": self._clear_map,
             "ask_user": self._ask_user,
         }
@@ -1041,20 +1040,15 @@ class AgentTools:
 
     def _report_limitation(self, context: AgentRunContext, arguments: dict[str, Any]) -> dict[str, Any]:
         messages = {
-            "dataset_unavailable": "No usable numeric observations were obtained for the requested area and reference year. I have not substituted place counts or invented a heatmap. WorldPop population grids, supported GeoTIFFs, GeoJSON, coordinate CSV, and verified source-table joins can be mapped automatically. Studio > Data also accepts GeoJSON; choose Heatmap and its numeric value field in Visualize.",
-            "web_search_unavailable": "The web search or public source reader could not retrieve the needed observations. No statistical layer was invented. The direct WorldPop reader does not require web-search access; supported geographic sources can also be loaded in Studio > Data.",
-            "analysis_unavailable": "The requested analysis is not supported by the current map tools. Studio can visualize and filter supplied geographic data, compute summary statistics, and select high-value features; it cannot infer missing observations or perform an unsupported scientific analysis.",
+            "dataset_unavailable": "Analytical dataset visualization, including population heatmaps and choropleths, is unavailable in the current map interface. No statistical layer was created or place counts substituted for observations. Ordinary place search, geographic overlays, and routes remain available.",
+            "web_search_unavailable": "The web search or public source reader could not retrieve the requested evidence. Analytical dataset visualization is unavailable in the current map interface; no statistical layer was invented.",
+            "analysis_unavailable": "The requested analytical dataset visualization or analysis is unavailable in the current map interface. Ordinary place search, geographic overlays, and routes remain available; missing observations cannot be inferred.",
         }
         reason = arguments.get("reason")
         if not isinstance(reason, str) or reason not in messages:
             raise ServiceError("A supported map capability limitation is required.", 400)
         if reason in {"dataset_unavailable", "web_search_unavailable"} and context.loaded_datasets:
             raise ServiceError("A real sourced dataset has already been queued. Describe its actual coverage and caveats instead of declaring that no data was obtained.", 400)
-        if (reason in {"dataset_unavailable", "web_search_unavailable"} and context.population_requested
-                and context.research_city_ref and self.dependencies.load_population and not context.population_attempts):
-            raise ServiceError("A direct WorldPop population reader is available. Resolve the requested city and call load_population before concluding that population data cannot be obtained.", 400)
-        if reason in {"dataset_unavailable", "web_search_unavailable"} and self.dependencies.search_web and not context.web_searches and not context.geometry_reads:
-            raise ServiceError("Web research is available. Use search_web to find sources before concluding that the requested dataset cannot be obtained.", 400)
         message = messages[reason]
         if context.research_area:
             message = f"Located {context.research_area['name']}; its study extent is shown as geographic context only. {message}"

@@ -1,4 +1,4 @@
-// Browser/Node data engine. No network, DOM, map instance, or package dependencies.
+// Shared browser/Node data engine. No network, DOM, map instance, or package dependencies.
 export const PALETTES = {
   monochrome: { label: 'Monochrome', colors: ['#d7dad6', '#858b85', '#252b28'] },
   olive: { label: 'Olive', colors: ['#e3e8c5', '#9caa69', '#52633d', '#233c30'] },

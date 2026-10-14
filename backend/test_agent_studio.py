@@ -11,7 +11,7 @@ from unittest import mock
 
 from backend import server
 from backend.agent import MapAgentService, SYSTEM_PROMPT
-from backend.agent_tools import AGENT_TOOL_SCHEMAS, MAX_CONTEXT_BYTES, AgentDependencies, AgentTools
+from backend.agent_tools import AGENT_TOOL_SCHEMAS, MAX_CONTEXT_BYTES, RETIRED_TOOL_NAMES, AgentDependencies, AgentTools
 
 
 def studio_context():
@@ -178,7 +178,7 @@ class ContextAndStudioTests(BackendCase):
 
     def test_all_schemas_enforce_the_fixed_parameter_allowlist(self):
         names = {tool["function"]["name"] for tool in AGENT_TOOL_SCHEMAS}
-        self.assertEqual(names, {"find_city", "search_places", "plan_route", "present_map", "clear_map", "ask_user", "studio_operation", "report_limitation", "search_web", "read_web_source", "load_web_dataset", "load_population", "load_raster_dataset", "map_source_table", "highlight_city", "highlight_roads", "plot_points", "draw_geometry", "map_action"})
+        self.assertEqual(names, {"find_city", "search_places", "plan_route", "present_map", "clear_map", "ask_user", "report_limitation", "search_web", "read_web_source", "highlight_city", "highlight_roads", "plot_points", "draw_geometry", "map_action"})
         context = self.tools.new_context(studio_context())
         for name in names | {"run_python", "read_settings"}:
             with self.subTest(name=name), self.assertRaises(server.ServiceError):
@@ -276,6 +276,64 @@ class ContextAndStudioTests(BackendCase):
         self.assertNotIn("mapUpdate", result)
 
 
+class RetirementTests(BackendCase):
+    def test_retired_tools_are_not_advertised_or_executable_even_with_legacy_context(self):
+        names = {tool["function"]["name"] for tool in AGENT_TOOL_SCHEMAS}
+        self.assertEqual(RETIRED_TOOL_NAMES, {"studio_operation", "load_web_dataset", "load_population", "load_raster_dataset", "map_source_table"})
+        self.assertFalse(names & RETIRED_TOOL_NAMES)
+        before = self.cache.capture_workspace()
+        for name in RETIRED_TOOL_NAMES:
+            with self.subTest(name=name), self.assertRaisesRegex(server.ServiceError, "not available"):
+                self.tools.execute(self.tools.new_context(studio_context()), name, {})
+        self.assertEqual(self.cache.capture_workspace(), before)
+
+    def test_active_prompt_does_not_advertise_retired_tools_or_interface(self):
+        for name in RETIRED_TOOL_NAMES | {"Studio"}:
+            with self.subTest(name=name):
+                self.assertNotIn(name, SYSTEM_PROMPT)
+
+    def test_unavailable_visualization_does_not_require_available_readers(self):
+        from dataclasses import replace
+        population = mock.Mock()
+        web = mock.Mock()
+        self.tools = AgentTools(replace(self.tools.dependencies, load_population=population, search_web=web))
+        service, hub, _ = self.service([
+            tool_call("find_city", {"query": "Test"}),
+            tool_call("report_limitation", {"reason": "analysis_unavailable"}),
+        ])
+        event = hub.wait(service.start_run(hub.session, "Create a population heatmap of Test", {}))
+        self.assertEqual(event["type"], "agent.limitation")
+        self.assertIn("unavailable", event["message"])
+        self.assertNotIn("Studio", event["message"])
+        population.assert_not_called()
+        web.assert_not_called()
+        for _, emitted in hub.events:
+            if emitted["type"] == "agent.map":
+                self.assertNotIn("dataset", emitted["update"])
+                self.assertNotIn("studio", emitted["update"])
+
+    def test_population_retry_requests_limitation_not_retired_tools(self):
+        service, hub, client = self.service([
+            {"content": "The heatmap is ready."},
+            tool_call("report_limitation", {"reason": "analysis_unavailable"}),
+        ])
+        event = hub.wait(service.start_run(hub.session, "Create a population heatmap", {}))
+        self.assertEqual(event["type"], "agent.limitation")
+        reminder = client.messages[1][-1]["content"]
+        self.assertIn("analysis_unavailable", reminder)
+        for name in RETIRED_TOOL_NAMES | {"Studio"}:
+            self.assertNotIn(name, reminder)
+        self.assertFalse(any(item["type"] == "agent.map" for _, item in hub.events))
+
+    def test_stale_model_tool_calls_cannot_emit_dataset_updates(self):
+        for name in RETIRED_TOOL_NAMES:
+            with self.subTest(name=name):
+                service, hub, _ = self.service([tool_call(name)])
+                event = hub.wait(service.start_run(hub.session, "Create a population heatmap", studio_context()))
+                self.assertEqual(event["type"], "agent.failed")
+                self.assertFalse(any(item["type"] == "agent.map" for _, item in hub.events))
+
+
 class CapabilityLimitationTests(BackendCase):
     def test_limitation_is_validated_and_has_no_substitute_geography(self):
         for reason in ("dataset_unavailable", "web_search_unavailable", "analysis_unavailable"):
@@ -284,7 +342,8 @@ class CapabilityLimitationTests(BackendCase):
                 self.assertTrue(result["limitation"])
                 self.assertEqual(result["reason"], reason)
                 self.assertNotIn("mapUpdate", result)
-                self.assertIn("Studio", result["message"])
+                self.assertIn("unavailable", result["message"])
+                self.assertNotIn("Studio", result["message"])
         for arguments in ({}, {"reason": "make_something_up"}, {"reason": "dataset_unavailable", "message": "Heatmap created"}):
             with self.subTest(arguments=arguments), self.assertRaises(server.ServiceError):
                 self.tools.execute(self.tools.new_context({}), "report_limitation", arguments)
@@ -297,7 +356,7 @@ class CapabilityLimitationTests(BackendCase):
         self.assertEqual(event["type"], "agent.limitation")
         self.assertEqual(event["reason"], "dataset_unavailable")
         self.assertFalse(event["reversible"])
-        self.assertIn("numeric value field", event["message"])
+        self.assertIn("visualization", event["message"])
         self.assertEqual(self.cache.capture_workspace(), before)
         self.assertFalse(any(item["type"] in {"agent.map", "agent.failed", "agent.completed"} for _, item in hub.events))
         self.assertEqual(len(client.messages), 1)

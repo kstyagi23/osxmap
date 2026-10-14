@@ -173,7 +173,7 @@ class MapActionAgentTests(BackendCase):
             self.assertTrue(self.tools.execute(context, "map_action", arguments)["queued"])
         self.assertEqual(context.highlight_actions, 0)
 
-    def test_studio_style_visibility_order_and_remove_are_typed_client_actions(self):
+    def test_retired_studio_style_visibility_order_and_remove_are_rejected(self):
         context = self.tools.new_context(studio_context())
         for arguments in (
             {"action": "style", "layerId": "layer-a", "color": "red", "opacity": .5, "lineWidth": 4, "pointRadius": 9},
@@ -181,9 +181,8 @@ class MapActionAgentTests(BackendCase):
             {"action": "move", "layerId": "layer-a", "beforeLayerId": "layer-b"},
             {"action": "remove", "layerId": "layer-a"},
         ):
-            result = self.tools.execute(context, "studio_operation", arguments)["mapUpdate"]["studio"]
-            self.assertEqual(result["workspaceId"], "workspace-a")
-            self.assertEqual(result["action"], arguments["action"])
+            with self.subTest(action=arguments["action"]), self.assertRaisesRegex(ServiceError, "not available"):
+                self.tools.execute(context, "studio_operation", arguments)
         context = self.tools.new_context(studio_context())
         invalid = {"action": "style", "layerId": "layer-a", "color": "red", "visible": False}
         with self.assertRaises(ServiceError):
@@ -353,19 +352,22 @@ class MapActionAgentTests(BackendCase):
             terminal = hub.wait(service.start_run(hub.session, "Create a population heatmap of Noida", studio_context()))
             self.assertNotEqual(terminal["type"], "agent.completed")
 
-    def test_recoloring_an_existing_visible_population_heatmap_does_not_reload_data(self):
+    def test_recoloring_a_legacy_population_heatmap_reports_unavailable(self):
         raw = studio_context()
         raw["studio"]["layers"][0].update({"visualization": "heatmap", "field": "value", "visible": True, "opacity": .85})
-        service, hub, client = self.service([tool_call("studio_operation", {"action": "style", "layerId": "layer-a", "color": "red"}), {"content": "Existing population heatmap recolored red."}])
+        service, hub, client = self.service([tool_call("report_limitation", {"reason": "analysis_unavailable"})])
         terminal = hub.wait(service.start_run(hub.session, "Recolor the loaded population heatmap in red", raw))
-        self.assertEqual(terminal["type"], "agent.completed")
-        self.assertEqual(len(client.messages), 2)
+        self.assertEqual(terminal["type"], "agent.limitation")
+        self.assertIn("unavailable", terminal["message"])
+        self.assertEqual(len(client.messages), 1)
+        self.assertFalse(any(event["type"] == "agent.map" for _, event in hub.events))
 
-    def test_creating_then_styling_visible_population_heatmap_uses_current_layer_state(self):
+    def test_creating_then_styling_legacy_population_heatmap_cannot_emit_updates(self):
         service, hub, client = self.service([tool_call("studio_operation", {"action": "visualize", "layerId": "layer-a", "visualization": "heatmap", "field": "value"}), tool_call("studio_operation", {"action": "style", "layerId": "layer-a", "color": "red"}), {"content": "Red population heatmap queued."}])
         terminal = hub.wait(service.start_run(hub.session, "Create a red population heatmap", studio_context()))
-        self.assertEqual(terminal["type"], "agent.completed")
-        self.assertEqual(len(client.messages), 3)
+        self.assertEqual(terminal["type"], "agent.failed")
+        self.assertEqual(len(client.messages), 1)
+        self.assertFalse(any(event["type"] == "agent.map" for _, event in hub.events))
 
     def test_wrong_fill_outline_colors_and_omitted_second_city_cannot_complete(self):
         service, hub, _ = self.service([tool_call("find_city", {"query": "Noida"}), tool_call("highlight_city", {"cityRef": "city:1", "style": {"color": "yellow", "fillColor": "green"}}), {"content": "Red fill and blue outline ready."}, {"content": "Complete."}])

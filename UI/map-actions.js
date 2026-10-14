@@ -1,4 +1,4 @@
-import { normalizeCollection, normalizeColor, fieldsFor, boundsFor } from './studio-data.js';
+import { normalizeCollection, normalizeColor, fieldsFor, boundsFor } from './map-data.js';
 
 export const MAP_ACTIONS_VERSION = 1;
 export const MAP_ACTION_NAMES = Object.freeze(['add_layer', 'style_layer', 'set_visibility', 'remove_layer', 'clear_overlays', 'move_layer', 'filter_layer', 'fit_layer', 'set_view', 'set_basemap', 'set_terrain', 'set_display']);
@@ -445,7 +445,7 @@ export class MeridianMapActions {
     try {
       if (this.layers.reduce((sum, layer) => sum + this.dataSizes.get(layer.data) * 2, 0) > MAP_ACTION_LIMITS.storageBytes) throw new Error('Overlay data exceeds the safe 4 MiB local-storage budget. Export GeoJSON to retain it.');
       const serialized = JSON.stringify({ version: MAP_ACTIONS_VERSION, layers: this.layers });
-      const combined = serialized.length * 2 + ['meridian.studio.v1', 'meridian.explore.v1'].reduce((sum, key) => sum + (this.storage.getItem(key)?.length || 0) * 2, 0);
+      const combined = serialized.length * 2 + (this.storage.getItem('meridian.explore.v1')?.length || 0) * 2;
       if (serialized.length * 2 > MAP_ACTION_LIMITS.storageBytes || combined > MAP_ACTION_LIMITS.combinedStorageBytes) throw new Error('Overlays exceed the safe local-storage budget (4 MiB overlays / 8 MiB combined). Export GeoJSON to retain them.');
       this.storage.setItem(STORAGE_KEY, serialized);
       this.persistenceMessage = '';
@@ -463,7 +463,7 @@ export class MeridianMapActions {
       const saved = this.storage.getItem(STORAGE_KEY);
       if (!saved) return;
       if (saved.length * 2 > MAP_ACTION_LIMITS.storageBytes) throw new Error('Saved overlays exceed the safe storage limit.');
-      if (saved.length * 2 + ['meridian.studio.v1', 'meridian.explore.v1'].reduce((sum, key) => sum + (this.storage.getItem(key)?.length || 0) * 2, 0) > MAP_ACTION_LIMITS.combinedStorageBytes) throw new Error('Saved overlays and workspace exceed the safe 8 MiB combined storage limit.');
+      if (saved.length * 2 + (this.storage.getItem('meridian.explore.v1')?.length || 0) * 2 > MAP_ACTION_LIMITS.combinedStorageBytes) throw new Error('Saved overlays and workspace exceed the safe 8 MiB combined storage limit.');
       const result = this.restoreSnapshot(JSON.parse(saved), { persist: false, render: false });
       if (!result.applied) throw new Error(result.reason);
     } catch (error) { this.persistenceMessage = `Saved map layers were not loaded: ${error.message}`; }
