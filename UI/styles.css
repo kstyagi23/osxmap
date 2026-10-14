@@ -703,7 +703,7 @@ dialog p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 
   .spectral-settings { right: var(--gutter); bottom: calc(80px + env(safe-area-inset-bottom)); width: calc(100vw - 140px); }
   .spectral-settings > summary { min-height: 48px; padding: 0 10px; gap: 7px; font-size: 10px; }
   .spectral-settings > summary strong { font-size: 9px; }
-  .spectral-settings[open] { width: calc(100vw - var(--gutter) * 2); bottom: calc(100px + env(safe-area-inset-bottom)); }
+  .spectral-settings[open] { width: calc(100vw - var(--gutter) * 2); bottom: calc(148px + env(safe-area-inset-bottom)); }
   .spectral-settings .spectral-deck { max-height: min(45dvh, calc(100dvh - 260px)); overflow-x: hidden; scroll-snap-type: none; padding-bottom: 0; }
   :root:has(.spectral-settings[open]) :is(.manual-sidebar, .info-drawer, .map-feedback-stack) { visibility: hidden; }
   .map-history-controls button { width: 44px; height: 44px; }
