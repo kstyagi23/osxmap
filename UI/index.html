@@ -10,10 +10,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./styles.css?v=20261014-spectral-compact-2">
+    <link rel="stylesheet" href="./styles.css?v=20261016-services-3">
+    <link rel="stylesheet" href="./service-settings.css?v=20261016-services-3">
+    <script type="module" src="./settings-entry.js?v=20261016-services-3"></script>
     <script defer src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
     <script defer src="https://unpkg.com/maplibre-contour@0.0.5/dist/index.min.js"></script>
-    <script type="module" src="./app.js?v=20261014-spectral-compact-2"></script>
+    <script type="module" src="./app.js?v=20261016-services-3"></script>
   </head>
   <body>
     <main class="app-shell">
@@ -24,12 +26,21 @@
         </span>
       </header>
       <div class="app-actions" role="group" aria-label="Appearance and display">
-        <button id="service-settings-open" type="button" class="icon-button" aria-label="Service Settings" title="Service Settings">Settings</button>
+        <a class="settings-page-link" href="./settings.html" title="Open the service configuration page">Settings</a>
+        <button id="service-settings-open" type="button" class="icon-button" aria-label="Quick Service Settings" title="Configure services without leaving the map">Services</button>
+        <button id="live-layers-open" type="button" class="icon-button" aria-controls="live-layers-panel" aria-expanded="false">Live layers</button>
         <button id="renderer-toggle" type="button" class="icon-button" aria-pressed="false" title="Optional lazy-loaded globe">Globe / 3D</button>
         <button id="theme-toggle" class="icon-button" type="button" aria-label="Toggle light and dark theme" aria-pressed="false" title="Toggle theme"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 14.1A8.4 8.4 0 0 1 9.9 4a8.4 8.4 0 1 0 10.2 10.1Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button>
         <button id="fullscreen-toggle" class="icon-button" type="button" aria-label="Toggle fullscreen" aria-pressed="false" title="Fullscreen"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         <button id="view-mode-toggle" class="icon-button" type="button" aria-label="Enter view mode" aria-pressed="false" title="View mode: hide controls"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><path class="view-mode-slash" d="m4 4 16 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
       </div>
+      <section id="live-layers-panel" class="live-layers-panel" aria-labelledby="live-layers-heading" hidden>
+        <header><div><p class="live-layers-eyebrow">MERIDIAN / DATA</p><h2 id="live-layers-heading">Layers &amp; sources</h2></div><button id="live-layers-close" type="button" aria-label="Close live layers">&#215;</button></header>
+        <p class="live-layers-intro">Add observations and discovery records to this view. Nothing polls until a layer is shown.</p>
+        <p id="live-layers-summary" role="status">Connecting to local service policy...</p>
+        <div id="live-layers-content"></div>
+        <footer><a href="./settings.html">Configure services &amp; credentials &#8599;</a></footer>
+      </section>
 
       <section class="floating-search search-panel" aria-label="Search and map instructions">
         <form id="search-form" class="search-form">

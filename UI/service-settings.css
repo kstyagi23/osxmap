@@ -1,4 +1,12 @@
 /* Shared modal/page settings surface. No renderer or remote assets required. */
+.settings-page { overflow: auto; height: auto; min-height: 100dvh; background: var(--surface-solid); }
+.settings-page-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; max-width: 1280px; margin: auto; padding: 24px 32px; }
+.settings-page-brand { display: flex; align-items: center; gap: 12px; font-size: 22px; font-weight: 650; letter-spacing: -.04em; color: var(--ink); text-decoration: none; }
+.settings-page-brand span { border-left: 1px solid var(--line); padding-left: 16px; font: 11px var(--mono); letter-spacing: 0; color: var(--muted); }
+.settings-page-back { color: var(--accent); font-size: 12px; text-decoration: none; }
+#settings-page-content { max-width: 1280px; padding: 0 32px 32px; margin: auto; }
+.settings-startup { padding: 32px; color: var(--muted); }
+@media (max-width: 600px) { .settings-page-header { padding: 20px 16px; } .settings-page-brand span { display: none; } #settings-page-content { padding: 0 10px 20px; } }
 .service-settings.ss-shell {
   --ss-bg: var(--surface-solid, #171b18);
   --ss-raised: var(--surface-elevated, #1d221e);

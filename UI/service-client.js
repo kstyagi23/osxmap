@@ -83,6 +83,7 @@ export function createServiceClient({ apiBase = API_BASE_URL, fetch: fetcher = g
     return work;
   }
   return {
+    get apiOrigin() { return base.origin; },
     catalogue: (options) => request('/api/services', options), settings,
     update: (id, changes) => mutate(id, '', 'PUT', changes),
     replaceCredentials: (id, credentials) => mutate(id, '/credentials', 'PUT', { credentials }),

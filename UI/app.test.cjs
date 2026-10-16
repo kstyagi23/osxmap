@@ -1370,6 +1370,22 @@ test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite
   assert.match(app.elements['terrain-data-status'].textContent, /Contour library unavailable/);
 });
 
+test('map initializes using the independently mounted Settings client without duplicate credential sessions', () => {
+  const { app, context, window } = setup();
+  context.ResizeObserver = class { observe() {} };
+  context.requestAnimationFrame = () => 1;
+  context.localStorage = { setItem() {} };
+  const client = { id: 'shared-settings-client' };
+  window.MERIDIAN_SETTINGS = { client, refresh: () => new Promise(() => {}) };
+  context.initServiceSettings = () => assert.fail('Do not create a second Settings instance after map startup');
+  context.createLiveLayers = (options) => { assert.equal(options.client, client); return {}; };
+  context.createRendererController = () => ({ renderer: 'maplibre' });
+  window.maplibregl = { Map: class { addControl() {} on() {} getContainer() { return { querySelector: () => ({}) }; } }, AttributionControl: class {}, ScaleControl: class {} };
+  app.createMap();
+  assert.equal(app.serviceClient, client);
+  assert.equal(app.serviceSettings, window.MERIDIAN_SETTINGS);
+});
+
 test('regional imagery is gated by the entire viewport, native zoom, pitch, and explicit preference', () => {
   const { app } = setup({ approvedServices: ['nasa.gibs'] });
   app.mapMode = 'satellite';

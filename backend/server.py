@@ -3399,7 +3399,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if not target.is_relative_to(UI_ROOT.resolve()) or not target.is_file() or target.suffix.lower() not in {".html", ".js", ".css", ".png", ".jpg", ".svg", ".woff2", ".json"}:
                     raise ServiceError("Not found.", 404)
                 data = target.read_bytes()
-                if target.name == 'index.html':
+                if target.name in {'index.html', 'settings.html'}:
                     # Host has already passed the exact loopback/port allowlist.
                     origin = 'http://' + self.headers.get('Host').lower()
                     configuration = '<script>window.MONUMENT_API_URL=' + json.dumps(origin) + ';</script>'

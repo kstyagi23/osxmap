@@ -1906,9 +1906,24 @@ class CityExplorer {
     this.basemapEligible = this.serviceReady('openfreemap.public');
     this.map.addControl(new window.maplibregl.AttributionControl({ compact: true }), 'bottom-right');
     this.map.addControl(new window.maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
-    this.serviceClient = createServiceClient({ apiBase: API_BASE_URL });
-    this.serviceSettings = initServiceSettings({ client: this.serviceClient, onChange: (snapshot) => this.applyServicePolicy(snapshot) });
-    document.getElementById('service-settings-open')?.addEventListener('click', () => this.serviceSettings.open());
+    this.serviceSettings = window.MERIDIAN_SETTINGS || initServiceSettings({ onChange: (snapshot) => this.applyServicePolicy(snapshot) });
+    this.serviceClient = this.serviceSettings.client;
+    const panel = document.getElementById('live-layers-panel');
+    const content = document.getElementById('live-layers-content');
+    if (content) document.querySelectorAll('.explore-context > .command-group').forEach((group) => {
+      if (group.querySelector('[data-service-layer], [data-cesium-product]')) content.append(group);
+    });
+    const togglePanel = (open) => {
+      if (!panel) return;
+      panel.hidden = !open;
+      document.getElementById('live-layers-open')?.setAttribute('aria-expanded', String(open));
+      if (open) document.getElementById('live-layers-close')?.focus();
+    };
+    document.getElementById('live-layers-open')?.addEventListener('click', () => togglePanel(panel.hidden));
+    document.getElementById('live-layers-close')?.addEventListener('click', () => togglePanel(false));
+    panel?.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.stopPropagation(); togglePanel(false); document.getElementById('live-layers-open')?.focus(); } });
+    window.addEventListener('meridian:service-settings', (event) => this.applyServicePolicy(event.detail));
+    if (!window.MERIDIAN_SETTINGS) document.getElementById('service-settings-open')?.addEventListener('click', () => this.serviceSettings.open());
     document.querySelectorAll('[data-cesium-product]').forEach((button) => button.addEventListener('click', async () => {
       const result = await this.rendererController.enableProduct(button.dataset.cesiumProduct, {});
       this.showMapNotice(result.reasons?.join(' ') || result.state);
@@ -1919,7 +1934,7 @@ class CityExplorer {
     } });
     this.rendererController = createRendererController({ map: this.map, container: document.getElementById('globe'), liveLayers: this.liveLayers, client: this.serviceClient, onChange: (renderer) => {
       const globe = renderer === 'cesium';
-      document.querySelectorAll('[data-map-action], [data-map-mode], [data-service-layer]').forEach((button) => { button.disabled = globe || (button.dataset.serviceLayer && !this.serviceReady(button.dataset.serviceLayer)); });
+      document.querySelectorAll('[data-map-action], [data-map-mode], [data-service-layer]').forEach((button) => { button.disabled = globe; });
       const button = document.getElementById('renderer-toggle');
       if (button) { button.setAttribute('aria-pressed', String(globe)); button.textContent = globe ? 'Map' : 'Globe / 3D'; }
       if (globe) { this.stopRouteAnimation(false); this.imageryMetadataController?.abort(); this.elevationController?.abort(); }
@@ -1929,9 +1944,10 @@ class CityExplorer {
       const visible = button.getAttribute('aria-pressed') !== 'true';
       button.setAttribute('aria-pressed', String(visible));
       if (!visible) { this.liveLayers.hide(id); return; }
+      if (!this.serviceReady(id)) { button.setAttribute('aria-pressed', 'false'); this.serviceSettings.open(); return; }
       this.liveLayers.show(id, { query: (map) => {
         const bounds = map.getBounds(), center = map.getCenter();
-        return id === 'gdelt.doc2' ? { text: this.elements['city-query'].value.trim() || 'weather', limit: 20 }
+        return id === 'gdelt.doc2' ? { text: this.elements['search-input'].value.trim() || 'weather', limit: 20 }
           : id === 'nasa.cmr' || id === 'cdse.catalogue' ? { bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], dataset: id === 'nasa.cmr' ? 'HLSL30' : 'sentinel-2-l2a', start: new Date(Date.now() - 7 * 86400000).toISOString(), end: new Date().toISOString(), limit: 20 }
           : ['noaa.nws', 'openweather.basic', 'openmeteo.weather', 'openmeteo.air_quality'].includes(id) ? { latitude: center.lat, longitude: center.lng, limit: 50 }
           : id === 'celestrak.gp' ? { dataset: 'stations', limit: 50 }
@@ -2119,9 +2135,15 @@ class CityExplorer {
     this.applyMapMode();
     if (!this.serviceReady('cesiumjs.library')) this.rendererController?.switchTo('maplibre');
     document.querySelectorAll('[data-service-layer]').forEach((button) => {
-      button.disabled = !this.serviceReady(button.dataset.serviceLayer);
-      if (button.disabled) button.setAttribute('aria-pressed', 'false');
+      const ready = this.serviceReady(button.dataset.serviceLayer);
+      const state = this.serviceStates.find((entry) => entry.id === button.dataset.serviceLayer);
+      button.disabled = this.rendererController?.renderer === 'cesium';
+      button.setAttribute('data-service-state', ready ? 'available' : state?.state || 'offline');
+      button.title = ready ? 'Show this data layer in the current viewport' : `Configure service: ${state?.reasons?.join(' ') || 'Local backend unavailable'}`;
+      if (!ready) button.setAttribute('aria-pressed', 'false');
     });
+    const summary = document.getElementById('live-layers-summary');
+    if (summary) summary.textContent = this.serviceStates.length ? `${this.serviceStates.filter((entry) => entry.effective_enabled).length} offerings available / credentials and permission gates enforced` : 'Backend unavailable. Open Settings to check the connection.';
   }
 
   setTerrainDataStatus(message) {
@@ -4034,8 +4056,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     } catch { /* Cache is optional, including on non-secure origins. */ }
   }
   try {
-    const client = createServiceClient({ apiBase: API_BASE_URL });
-    window.MERIDIAN_SERVICE_STATE = await client.settings();
-  } catch { window.MERIDIAN_SERVICE_STATE = { services: [] }; }
-  new CityExplorer();
+    new CityExplorer();
+  } catch {
+    const notice = document.getElementById('map-notice');
+    notice.textContent = 'The map could not initialize. Service Settings remains available from the toolbar.';
+    notice.classList.remove('is-hidden');
+  }
 });
