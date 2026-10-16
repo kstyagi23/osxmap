@@ -295,7 +295,13 @@ export function initServiceSettings({ apiBase, mount = document.body, client = c
   render();
   return {
     client, dialog, element: dialog, refresh, close,
-    open() { if (disposed) return; opener = doc.activeElement; dialog.hidden = false; if (!page && !dialog.open) dialog.showModal(); search.focus(); return refresh(); },
+    open(serviceId) {
+      if (disposed) return;
+      if (typeof serviceId === 'string') { selectedId = serviceId; search.value = ''; category.value = 'all'; filter.value = 'all'; render(); }
+      opener = doc.activeElement; dialog.hidden = false;
+      if (!page && !dialog.open) dialog.showModal();
+      search.focus(); return refresh();
+    },
     destroy() { clearCredentials(); disposed = true; if (!page && dialog.open) dialog.close(); dialog.remove(); },
   };
 }

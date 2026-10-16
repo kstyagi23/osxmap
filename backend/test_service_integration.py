@@ -5,6 +5,7 @@ Run through backend.test_isolated so imports cannot read .env or use networks.
 
 import copy
 import json
+import io
 from dataclasses import replace
 from pathlib import Path
 import tempfile
@@ -39,6 +40,23 @@ class Handler:
 
 
 class ServiceIntegrationTests(unittest.TestCase):
+    def test_settings_html_serves_standalone_with_exact_custom_port_configuration(self):
+        handler = object.__new__(server.ApiHandler)
+        handler.path = '/settings.html'
+        handler.headers = {'Host': '127.0.0.1:9898'}
+        handler.wfile = io.BytesIO()
+        handler.responses = []
+        handler.send_response = lambda status: handler.responses.append(status)
+        handler.send_header = lambda *args: None
+        handler.end_headers = lambda: None
+        with mock.patch.object(server, 'SETTINGS_BROKER', LocalBroker(9898)):
+            server.ApiHandler.do_GET(handler)
+        self.assertEqual(handler.responses, [200])
+        html = handler.wfile.getvalue().decode('utf-8')
+        self.assertIn('window.MONUMENT_API_URL="http://127.0.0.1:9898"', html)
+        self.assertIn('settings-entry.js', html)
+        self.assertNotIn('maplibre', html)
+
     def test_cdse_discovery_admission_is_fixed_quota_and_refuses_disabled_policy(self):
         status, snapshot, headers = self.request('GET', '/api/settings/services')
         trusted = {**self.headers, 'Cookie': headers['Set-Cookie'].split(';', 1)[0], 'X-Meridian-CSRF': snapshot['csrfToken']}

@@ -1944,7 +1944,7 @@ class CityExplorer {
       const visible = button.getAttribute('aria-pressed') !== 'true';
       button.setAttribute('aria-pressed', String(visible));
       if (!visible) { this.liveLayers.hide(id); return; }
-      if (!this.serviceReady(id)) { button.setAttribute('aria-pressed', 'false'); this.serviceSettings.open(); return; }
+      if (!this.serviceReady(id)) { button.setAttribute('aria-pressed', 'false'); this.serviceSettings.open(id); return; }
       this.liveLayers.show(id, { query: (map) => {
         const bounds = map.getBounds(), center = map.getCenter();
         return id === 'gdelt.doc2' ? { text: this.elements['search-input'].value.trim() || 'weather', limit: 20 }

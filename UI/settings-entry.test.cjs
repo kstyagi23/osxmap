@@ -56,3 +56,11 @@ test('map startup is no longer delayed by a service settings request', () => {
   assert.match(html, /id="live-layers-open"/);
   assert.ok(html.indexOf('settings-entry.js') < html.indexOf('src="./app.js'));
 });
+
+test('Settings page mobile shell is content-sized and toolbar actions stay above search', () => {
+  const settingsCss = readFileSync(join(__dirname, 'service-settings.css'), 'utf8');
+  assert.match(settingsCss, /\.service-settings\.ss-shell\.ss-page\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*visible/);
+  const mapCss = readFileSync(join(__dirname, 'styles.css'), 'utf8');
+  assert.match(mapCss, /\.app-actions\s*\{[^}]*z-index:\s*30/);
+  assert.match(mapCss, /\.floating-search\s*\{[^}]*z-index:\s*25/);
+});

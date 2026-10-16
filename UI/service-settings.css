@@ -120,3 +120,6 @@
   .ss-shell .ss-facts > div { grid-template-columns: 1fr; gap: 2px; }
   .ss-shell .ss-control-grid { grid-template-columns: 1fr; }
 }
+@media (max-width: 780px) {
+  .service-settings.ss-shell.ss-page { width: 100%; height: auto; min-height: 0; overflow: visible; }
+}

@@ -16,6 +16,12 @@ function initialize() {
   } });
   window.MERIDIAN_SETTINGS = settings;
   document.getElementById('service-settings-open')?.addEventListener('click', () => settings.open());
+  settings.client.subscribe?.((event) => {
+    if (event.type === 'settings') {
+      window.MERIDIAN_SERVICE_STATE = event.settings;
+      window.dispatchEvent(new CustomEvent('meridian:service-settings', { detail: event.settings }));
+    }
+  });
   if (window.location.hash === '#settings') settings.open();
 }
 
