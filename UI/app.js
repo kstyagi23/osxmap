@@ -1,6 +1,10 @@
 import { AGENT_SOCKET_URL, API_BASE_URL, apiPath } from './config.js';
 import { MeridianMapActions, MAP_ACTION_NAMES } from './map-actions.js';
 import { registerSpectralTerrain } from './spectral-terrain.js';
+import { initServiceSettings } from './service-settings.js';
+import { createServiceClient } from './service-client.js';
+import { createLiveLayers } from './live-layers.js';
+import { createRendererController } from './renderer-controller.js';
 
 const TILE_ZOOM = 14;
 const ACCENT = '#d0dac5';
@@ -541,7 +545,7 @@ class CityExplorer {
   constructor() {
     this.elements = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
     this.theme = preference('theme', 'dark');
-    this.mapMode = ['satellite', 'route', 'terrain', 'spectral'].includes(preference('mapMode')) ? preference('mapMode') : 'satellite';
+    this.mapMode = 'route';
     this.workspaceView = 'explore';
     this.viewMode = false;
     this.country = { country: '', countryCode: '', method: 'detecting' };
@@ -983,6 +987,7 @@ class CityExplorer {
   }
 
   restoreMapAction(snapshot) {
+    this.rendererController?.assertCapability('undo');
     this.restoringAction = true;
     try {
       this.stopRouteAnimation(false);
@@ -993,6 +998,11 @@ class CityExplorer {
       this.contourStrength = snapshot.contourStrength ?? .55;
       this.mapMode = snapshot.mapMode;
       this.terrainEnabled = snapshot.terrainEnabled;
+      if (!this.serviceReady('mapzen.terrarium')) {
+        this.terrainEnabled = false;
+        if (['terrain', 'spectral'].includes(this.mapMode)) this.mapMode = 'route';
+      }
+      if (this.mapMode === 'satellite' && !this.serviceReady('esri.world_imagery') && !this.serviceReady('nasa.gibs')) this.mapMode = 'route';
       this.terrainExaggeration = snapshot.terrainExaggeration ?? 1.25;
       if (snapshot.theme && snapshot.theme !== this.theme) this.setTheme(snapshot.theme);
       if (this.map) {
@@ -1787,6 +1797,10 @@ class CityExplorer {
   }
 
   applyAgentMapUpdate(update) {
+    if (this.rendererController && !this.rendererController.hasCapability('workspace')) {
+      this.showMapNotice('Map actions are unsupported in Globe. Switch to MapLibre.');
+      return false;
+    }
     if (!update || typeof update !== 'object' || Array.isArray(update)) return false;
     const reject = (reason) => {
       this.agentApplicationError = `Map update was not applied: ${reason}`;
@@ -1882,14 +1896,61 @@ class CityExplorer {
   }
 
   createMap() {
-    this.spectralTileUrl = registerSpectralTerrain(window.maplibregl);
-    if (window.mlcontour) {
+    this.serviceStates = window.MERIDIAN_SERVICE_STATE?.services || [];
+    if (this.serviceReady('mapzen.terrarium')) this.spectralTileUrl = registerSpectralTerrain(window.maplibregl);
+    if (window.mlcontour && this.serviceReady('mapzen.terrarium')) {
       this.contourDem = new window.mlcontour.DemSource({ url: TERRAIN_TILE_URL, encoding: 'terrarium', maxzoom: 13, worker: true, cacheSize: 200 });
       this.contourDem.setupMaplibre(window.maplibregl);
     }
-    this.map = new window.maplibregl.Map({ container: 'map', style: 'https://tiles.openfreemap.org/styles/positron', center: [-122.48, 37.82], zoom: 11, pitch: this.terrainEnabled ? 45 : 0, bearing: -12, maxPitch: 78, attributionControl: false, canvasContextAttributes: { antialias: true }, maxTileCacheSize: 512, maxTileCacheZoomLevels: 5 });
+    this.map = new window.maplibregl.Map({ container: 'map', style: this.serviceReady('openfreemap.public') ? 'https://tiles.openfreemap.org/styles/positron' : { version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#171b18' } }] }, center: [-122.48, 37.82], zoom: 11, pitch: this.terrainEnabled ? 45 : 0, bearing: -12, maxPitch: 78, attributionControl: false, canvasContextAttributes: { antialias: true }, maxTileCacheSize: 256, maxTileCacheZoomLevels: 5 });
+    this.basemapEligible = this.serviceReady('openfreemap.public');
     this.map.addControl(new window.maplibregl.AttributionControl({ compact: true }), 'bottom-right');
     this.map.addControl(new window.maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
+    this.serviceClient = createServiceClient({ apiBase: API_BASE_URL });
+    this.serviceSettings = initServiceSettings({ client: this.serviceClient, onChange: (snapshot) => this.applyServicePolicy(snapshot) });
+    document.getElementById('service-settings-open')?.addEventListener('click', () => this.serviceSettings.open());
+    document.querySelectorAll('[data-cesium-product]').forEach((button) => button.addEventListener('click', async () => {
+      const result = await this.rendererController.enableProduct(button.dataset.cesiumProduct, {});
+      this.showMapNotice(result.reasons?.join(' ') || result.state);
+    }));
+    this.liveLayers = createLiveLayers({ map: this.map, client: this.serviceClient, Popup: window.maplibregl.Popup, onStatus: (status) => {
+      const element = document.getElementById('service-layer-status');
+      if (element) element.textContent = typeof status === 'string' ? status : `${status.id}: ${status.state}${status.count !== undefined ? ` / ${status.count} geographic features` : ''}${status.truncated ? ' / truncated' : ''}${status.provenance?.license ? ` / ${status.provenance.license}` : ''}`;
+    } });
+    this.rendererController = createRendererController({ map: this.map, container: document.getElementById('globe'), liveLayers: this.liveLayers, client: this.serviceClient, onChange: (renderer) => {
+      const globe = renderer === 'cesium';
+      document.querySelectorAll('[data-map-action], [data-map-mode], [data-service-layer]').forEach((button) => { button.disabled = globe || (button.dataset.serviceLayer && !this.serviceReady(button.dataset.serviceLayer)); });
+      const button = document.getElementById('renderer-toggle');
+      if (button) { button.setAttribute('aria-pressed', String(globe)); button.textContent = globe ? 'Map' : 'Globe / 3D'; }
+      if (globe) { this.stopRouteAnimation(false); this.imageryMetadataController?.abort(); this.elevationController?.abort(); }
+    } });
+    document.querySelectorAll('[data-service-layer]').forEach((button) => button.addEventListener('click', () => {
+      const id = button.dataset.serviceLayer;
+      const visible = button.getAttribute('aria-pressed') !== 'true';
+      button.setAttribute('aria-pressed', String(visible));
+      if (!visible) { this.liveLayers.hide(id); return; }
+      this.liveLayers.show(id, { query: (map) => {
+        const bounds = map.getBounds(), center = map.getCenter();
+        return id === 'gdelt.doc2' ? { text: this.elements['city-query'].value.trim() || 'weather', limit: 20 }
+          : id === 'nasa.cmr' || id === 'cdse.catalogue' ? { bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], dataset: id === 'nasa.cmr' ? 'HLSL30' : 'sentinel-2-l2a', start: new Date(Date.now() - 7 * 86400000).toISOString(), end: new Date().toISOString(), limit: 20 }
+          : ['noaa.nws', 'openweather.basic', 'openmeteo.weather', 'openmeteo.air_quality'].includes(id) ? { latitude: center.lat, longitude: center.lng, limit: 50 }
+          : id === 'celestrak.gp' ? { dataset: 'stations', limit: 50 }
+          : id === 'thespacedevs.ll2' || id === 'rainviewer.public' ? { limit: 20 }
+          : id === 'digitraffic.cameras' ? { bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], limit: 50 }
+          : { bbox: [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()], limit: 100 };
+      }, interval: id === 'adsblol.public' ? 30000 : 300000, predicted: button.dataset.predicted === 'true' });
+    }));
+    document.getElementById('renderer-toggle')?.addEventListener('click', async () => {
+      try {
+        const button = document.getElementById('renderer-toggle');
+        const globe = button.getAttribute('aria-pressed') !== 'true';
+        if (globe && !this.serviceReady('cesiumjs.library')) throw new Error('Cesium view is disabled or unavailable in Settings.');
+        await this.rendererController.switchTo(globe ? 'cesium' : 'maplibre');
+        button.setAttribute('aria-pressed', String(globe));
+        button.textContent = globe ? 'Map' : 'Globe / 3D';
+      } catch (error) { this.showMapNotice(error.message); }
+    });
+    this.serviceSettings.refresh().then((snapshot) => this.applyServicePolicy(snapshot)).catch(() => this.showMapNotice('Service policy is unavailable. Restricted layers remain disabled. Open Settings from the local backend URL.'));
     this.map.on('style.load', () => {
       this.addTerrainSource();
       this.applyTerrain();
@@ -1989,16 +2050,21 @@ class CityExplorer {
     const firstLayer = layers.find((layer) => layer.type !== 'background')?.id;
     const lastFill = layers.reduce((index, layer, current) => layer.type === 'fill' ? current : index, -1);
     const firstLine = layers.slice(lastFill + 1).find((layer) => layer.type === 'line' || layer.type === 'symbol')?.id;
+    if (this.serviceReady('esri.world_imagery') && !this.map.getSource('local-imagery')) {
     this.map.addSource('local-imagery', {
       type: 'raster', tiles: [IMAGERY_TILE_URL], tileSize: 256, maxzoom: 19,
       attribution: 'Imagery &copy; <a href="https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9">Esri, Vantor, Earthstar Geographics, GIS User Community</a>',
     });
     this.map.addLayer({ id: 'local-satellite', type: 'raster', source: 'local-imagery', paint: { 'raster-opacity': this.mapMode === 'satellite' ? 1 : 0, 'raster-opacity-transition': { duration: motionDuration(400) }, 'raster-saturation': 0, 'raster-brightness-max': 1, 'raster-contrast': 0, 'raster-resampling': 'linear', 'raster-fade-duration': motionDuration(300) } }, firstLayer);
+    }
+    if (this.serviceReady('nasa.gibs') && !this.map.getSource('local-regional-imagery')) {
     this.map.addSource('local-regional-imagery', {
       type: 'raster', tiles: [REGIONAL_IMAGERY.tiles], tileSize: 256, maxzoom: 12, bounds: REGIONAL_IMAGERY.bounds,
       attribution: '<a href="https://www.earthdata.nasa.gov/centers/gibs" target="_blank" rel="noopener">NASA GIBS / HLS</a>; Contains modified Copernicus Sentinel data (2026)',
     });
     this.map.addLayer({ id: 'local-regional-satellite', type: 'raster', source: 'local-regional-imagery', layout: { visibility: 'none' }, paint: { 'raster-saturation': 0, 'raster-brightness-max': 1, 'raster-contrast': 0, 'raster-resampling': 'linear', 'raster-fade-duration': motionDuration(300) } }, firstLayer);
+    }
+    if (!this.serviceReady('mapzen.terrarium')) return;
     this.map.addSource('local-spectral-elevation', { type: 'raster', tiles: [this.spectralTileUrl], tileSize: 256, maxzoom: 13 });
     this.map.addLayer({ id: 'local-spectral-surface', type: 'raster', source: 'local-spectral-elevation', layout: { visibility: 'none' }, paint: { 'raster-opacity': 1, 'raster-resampling': 'linear', 'raster-fade-duration': motionDuration(300) } }, firstLine);
     // The altitude raster sits above base fills; retain real water geometry as an ink mask.
@@ -2022,6 +2088,42 @@ class CityExplorer {
     notice.classList.remove('is-hidden');
   }
 
+  serviceReady(id) {
+    return this.serviceStates?.some((entry) => entry.id === id && entry.effective_enabled === true) === true;
+  }
+
+  applyServicePolicy(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.services)) return;
+    this.serviceStates = snapshot?.services || [];
+    const eligible = this.serviceReady('openfreemap.public');
+    if (this.basemapEligible !== eligible) {
+      this.basemapEligible = eligible;
+      this.map?.setStyle(eligible ? 'https://tiles.openfreemap.org/styles/positron' : { version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#171b18' } }] });
+    }
+    this.elevationController?.abort();
+    this.imageryMetadataController?.abort();
+    const restricted = [
+      ['esri.world_imagery', ['local-satellite'], ['local-imagery']],
+      ['nasa.gibs', ['local-regional-satellite'], ['local-regional-imagery']],
+      ['mapzen.terrarium', ['local-contour-labels', 'local-contours', 'local-hillshade', 'local-spectral-surface'], ['local-contour-source', 'local-spectral-elevation', TERRAIN_SOURCE]],
+    ];
+    for (const [id, layers, sources] of restricted) {
+      if (this.serviceReady(id)) continue;
+      if (id === 'mapzen.terrarium') { this.terrainEnabled = false; this.map?.setTerrain(null); }
+      for (const layer of layers) if (this.map?.getLayer(layer)) this.map.removeLayer(layer);
+      for (const source of sources) if (this.map?.getSource(source)) this.map.removeSource(source);
+    }
+    if (this.map?.isStyleLoaded()) this.addCartographyLayers();
+    if (!this.serviceReady('esri.world_imagery') && this.mapMode === 'satellite' && !this.serviceReady('nasa.gibs')) this.mapMode = 'route';
+    if (!this.serviceReady('mapzen.terrarium') && ['terrain', 'spectral'].includes(this.mapMode)) this.mapMode = 'route';
+    this.applyMapMode();
+    if (!this.serviceReady('cesiumjs.library')) this.rendererController?.switchTo('maplibre');
+    document.querySelectorAll('[data-service-layer]').forEach((button) => {
+      button.disabled = !this.serviceReady(button.dataset.serviceLayer);
+      if (button.disabled) button.setAttribute('aria-pressed', 'false');
+    });
+  }
+
   setTerrainDataStatus(message) {
     const status = this.elements['terrain-data-status'];
     if (!status) return;
@@ -2030,6 +2132,10 @@ class CityExplorer {
   }
 
   applyMapMode() {
+    if (!this.serviceReady('mapzen.terrarium')) {
+      this.terrainEnabled = false;
+      if (['terrain', 'spectral'].includes(this.mapMode)) this.mapMode = 'route';
+    }
     document.documentElement.dataset.mapMode = this.mapMode;
     document.querySelectorAll('button[data-map-mode]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.mapMode === this.mapMode)));
     if (this.map?.isStyleLoaded() || this.map?.getLayer('geo-route')) {
@@ -2061,11 +2167,11 @@ class CityExplorer {
     this.elements['regional-imagery-control'].hidden = !eligible;
     this.elements['regional-overview-toggle'].setAttribute('aria-pressed', String(this.regionalImageryEnabled));
     this.elements['regional-imagery-note'].textContent = this.regionalImageryUnavailable
-      ? 'Regional scene unavailable. Aerial composite is active; toggle to retry.'
-      : `Bay Area / Sentinel-2 / ${REGIONAL_IMAGERY.date} / 30 m. Clouds and small gaps remain; aerial imagery shows through gaps. Close-up views use the aerial composite.`;
+      ? 'Regional scene unavailable. Streets remain available; toggle to retry.'
+      : `Bay Area / Sentinel-2 / ${REGIONAL_IMAGERY.date} / 30 m. Clouds and coverage gaps remain; streets show through gaps. Not live imagery.`;
     if (this.mapMode === 'satellite') this.elements['context-mode'].textContent = active ? 'Regional satellite / Sentinel-2 scene' : 'Satellite / Aerial composite';
     if (active !== this.lastImageryMetadataSource) {
-      this.elements['context-imagery'].textContent = active ? 'NASA GIBS / HLS Sentinel-2 / 30 m' : 'Esri World Imagery';
+      this.elements['context-imagery'].textContent = active ? 'NASA GIBS / HLS Sentinel-2 / 30 m' : 'OpenFreeMap streets / no approved aerial composite';
       this.elements['context-imagery-date'].textContent = active ? `${REGIONAL_IMAGERY.date} / regional scene` : 'Varies by source';
       this.lastImageryMetadataSource = active;
     }
@@ -2073,6 +2179,14 @@ class CityExplorer {
 
   setMapMode(mode) {
     if (!['satellite', 'route', 'terrain', 'spectral'].includes(mode)) return;
+    if (['terrain', 'spectral'].includes(mode) && !this.serviceReady('mapzen.terrarium')) {
+      this.showMapNotice('Hosted terrain permission is unresolved. Streets and flat terrain remain available.');
+      return;
+    }
+    if (mode === 'satellite' && !this.serviceReady('esri.world_imagery') && !this.serviceReady('nasa.gibs')) {
+      this.showMapNotice('No approved imagery source is enabled. Showing OpenFreeMap streets.');
+      return;
+    }
     if (this.markManualChange()) return;
     if (mode === 'satellite' && this.imageryUnavailable) {
       this.imageryUnavailable = false;
@@ -2200,6 +2314,7 @@ class CityExplorer {
   }
 
   addTerrainSource() {
+    if (!this.serviceReady('mapzen.terrarium')) return;
     if (!this.map.getSource(TERRAIN_SOURCE)) {
       this.map.addSource(TERRAIN_SOURCE, {
         type: 'raster-dem',
@@ -2228,6 +2343,11 @@ class CityExplorer {
   }
 
   setTerrainView(enabled, duration = 420, exaggeration = this.terrainExaggeration ?? 1.25, strict = false, camera = true) {
+    if (enabled && !this.serviceReady('mapzen.terrarium')) {
+      if (strict) throw new Error('Hosted terrain permission is unresolved.');
+      this.showMapNotice('Hosted terrain permission is unresolved. Flat terrain is active.');
+      return false;
+    }
     if (this.markManualChange()) return false;
     this.terrainEnabled = enabled;
     this.terrainExaggeration = exaggeration;
@@ -2649,6 +2769,7 @@ class CityExplorer {
   async sampleElevationPoints(points, zoom, controller = new AbortController()) {
     const locations = Array.isArray(points) ? points.slice(0, 10) : [];
     const elevations = locations.map(() => null);
+    if (!this.serviceReady('mapzen.terrarium')) return elevations;
     const dem = this.contourDem;
     if (!Number.isFinite(zoom) || typeof dem?.getDemTile !== 'function' || controller.signal.aborted) return elevations;
     const z = Math.max(0, Math.min(13, Math.round(zoom)));
@@ -2758,6 +2879,11 @@ class CityExplorer {
       this.elements['context-imagery'].textContent = 'NASA GIBS / HLS Sentinel-2 / 30 m';
       this.elements['context-imagery-date'].textContent = `${REGIONAL_IMAGERY.date} / regional scene`;
       this.elements['context-imagery'].title = 'Adjacent HLS S30 tiles from the same Sentinel-2C pass. Reflectance imagery at 30 m; clouds and small coverage gaps remain. Aerial imagery shows through transparent pixels. Not live imagery or a global cloudless mosaic.';
+      return true;
+    }
+    if (!this.serviceReady('esri.world_imagery')) {
+      this.elements['context-imagery'].textContent = 'OpenFreeMap streets / classic Esri permission blocked';
+      this.elements['context-imagery-date'].textContent = 'Not applicable';
       return true;
     }
     const controller = new AbortController();
@@ -3877,6 +4003,10 @@ class CityExplorer {
 
   operate(action) {
     if (!this.map) return;
+    if (this.rendererController?.renderer === 'cesium') {
+      this.showMapNotice('Use globe camera controls, or switch to MapLibre for map actions.');
+      return;
+    }
     if (['in', 'out', 'reset'].includes(action)) this.cameraInteractionRevision = (this.cameraInteractionRevision || 0) + 1;
     if (action === 'in') this.map.zoomIn({ duration: motionDuration(250) });
     if (action === 'out') this.map.zoomOut({ duration: motionDuration(250) });
@@ -3903,5 +4033,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       ]);
     } catch { /* Cache is optional, including on non-secure origins. */ }
   }
+  try {
+    const client = createServiceClient({ apiBase: API_BASE_URL });
+    window.MERIDIAN_SERVICE_STATE = await client.settings();
+  } catch { window.MERIDIAN_SERVICE_STATE = { services: [] }; }
   new CityExplorer();
 });

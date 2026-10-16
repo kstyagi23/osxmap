@@ -903,6 +903,8 @@ class AgentHttpTests(BackendCase):
         for status, body in ((200, {"type": "FeatureCollection", "features": []}), (204, None), (503, {"error": "Busy"})):
             with self.subTest(status=status):
                 handler = object.__new__(server.ApiHandler)
+                handler.path = "/api/tile/14/11687/6833"
+                handler.headers = {"Host": f"127.0.0.1:{server.CONFIG.port}", "Origin": "http://127.0.0.1:8080"}
                 handler.send_response = mock.Mock()
                 handler.send_header = mock.Mock()
                 handler.end_headers = mock.Mock()
@@ -918,6 +920,7 @@ class AgentHttpTests(BackendCase):
     def test_undo_endpoint_uses_body_ownership_and_existing_error_handling(self):
         handler = object.__new__(server.ApiHandler)
         handler.path = "/api/agent/undo"
+        handler.headers = {"Host": f"127.0.0.1:{server.CONFIG.port}"}
         handler.read_json_body = lambda: {"sessionId": Hub.session, "runId": "agent-run-test"}
         handler.send_json = mock.Mock()
         response = {"workspace": self.cache.workspace_snapshot(), "undone": True}

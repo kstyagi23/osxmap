@@ -19,16 +19,28 @@ except ImportError:  # Supports `python server.py` from the backend directory.
 class OpenAIChatClient:
     """Calls an OpenAI-compatible /chat/completions endpoint without exposing secrets."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, policy_gate=None, credentials=None) -> None:
         self.config = config
+        self.policy_gate = policy_gate
+        self.credentials = credentials
 
     @property
     def available(self) -> bool:
+        if self.policy_gate:
+            try:
+                self.policy_gate()
+            except ServiceError:
+                return False
+            key = self.config.openai_api_key or (self.credentials() if self.credentials else {}).get('api_key', '')
+            return bool(self.config.openai_base_url and key and self.config.model_name)
         return self.config.agent_available
 
     def complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
         if not self.available:
             raise ServiceError("AI map configuration is incomplete.", 503)
+        if self.policy_gate:
+            self.policy_gate()
+        api_key = self.config.openai_api_key or (self.credentials() if self.credentials else {}).get('api_key', '')
         base_url = self.config.openai_base_url
         endpoint = base_url if base_url.endswith("/chat/completions") else f"{base_url}/chat/completions"
         payload = {
@@ -51,14 +63,34 @@ class OpenAIChatClient:
             data=body,
             method="POST",
             headers={
-                "Authorization": f"Bearer {self.config.openai_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
         )
+        token = None
+        quota = None
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
-                raw = response.read(2_000_000)
+            if self.policy_gate:
+                from backend.providers.transport import HTTPSPinnedTransport, Request
+                from backend.providers.quota import QuotaRule
+                from backend.server import service_foundation
+                state = self.policy_gate()
+                limit = min(20, int(state.get('limits', {}).get('requests_day', 20)))
+                if limit < 1:
+                    raise ServiceError('Local inference quota exhausted.', 429)
+                quota = service_foundation()[1].quota
+                token = quota.reserve('openai.api', 'local', (QuotaRule(limit=limit, calendar='day'),))
+                raw = HTTPSPinnedTransport().fetch(Request(endpoint, 'https://api.openai.com',
+                    headers=(('Authorization', f'Bearer {api_key}'), ('Content-Type', 'application/json')),
+                    method='POST', body=body, max_decompressed=2_000_000, timeout=45))
+                quota.finish(token)
+                token = None
+            else:
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    raw = response.read(2_000_001)
+                if len(raw) > 2_000_000:
+                    raise ServiceError('The AI map response exceeded its size limit.', 502)
         except urllib.error.HTTPError as error:
             detail = self._error_detail(error)
             if error.code == 429:
@@ -68,6 +100,9 @@ class OpenAIChatClient:
             raise ServiceError(f"The AI map provider rejected the request (HTTP {error.code}){detail}.", 503) from error
         except (urllib.error.URLError, TimeoutError) as error:
             raise ServiceError("The AI map provider is unavailable.", 503) from error
+        finally:
+            if token is not None and quota is not None:
+                quota.finish(token, ambiguous=True)
         try:
             response = json.loads(raw.decode("utf-8"))
             message = response["choices"][0]["message"]

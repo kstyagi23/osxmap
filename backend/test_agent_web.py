@@ -58,6 +58,20 @@ with mock.patch.object(pathlib.Path, "exists", lambda path: False if path.name =
 
 
 class SerpWebProviderTests(BackendCase):
+    def setUp(self):
+        super().setUp()
+        # These are authorized provider unit fixtures, not a production opt-in.
+        settings = mock.Mock()
+        settings.resolve_credentials.return_value = {"api_key": "fixture-key"}
+        runtime = mock.Mock()
+        runtime.quota.reserve.return_value = "fixture-reservation"
+        self.policy = mock.Mock(return_value={"effective_enabled": True, "limits": {"requests_month": 100}})
+        for patch in (mock.patch.object(server, "require_service", self.policy),
+                      mock.patch.object(server, "service_foundation", return_value=(settings, runtime))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.settings = settings
+
     def test_nominatim_administrative_polygons_retain_actual_settlement_classification(self):
         place = server.public_place({"provider": "openstreetmap", "providerPayload": {"type": "administrative", "addresstype": "village"}})
         self.assertEqual(place["placeType"], "village")
@@ -196,6 +210,7 @@ class SerpWebProviderTests(BackendCase):
             self.assertEqual(first, second)
             self.assertNotIn("fixture-key", json.dumps(first))
         with mock.patch.object(server, "CACHE", self.cache), mock.patch.object(server, "CONFIG", replace(config, serp_api_key="")), mock.patch.object(server, "fetch_serp_json") as fetch:
+            self.settings.resolve_credentials.return_value = {}
             cached = server.search_serp_web("Population data", "google", "")
             self.assertTrue(cached["stored"])
             self.assertIsNotNone(cached["retrievedAt"])
@@ -212,18 +227,30 @@ class SerpWebProviderTests(BackendCase):
             self.assertIsNone(self.cache.get_provider_response("serpapi", server.serp_request_key(params)))
 
     def test_transport_rejects_invalid_json_oversize_and_preserves_rate_limit(self):
-        response = mock.MagicMock()
-        response.__enter__.return_value = response
-        response.geturl.return_value = "https://serpapi.com/search.json"
-        for raw in (b"not JSON", b"[]", b"x" * (4 * 1024 * 1024 + 1)):
-            response.read.return_value = raw
-            with self.subTest(size=len(raw)), mock.patch("urllib.request.urlopen", return_value=response), self.assertRaises(server.ServiceError):
+        # The pinned transport enforces wire/decompression bounds, not this parser.
+        for raw in (b"not JSON", b"[]", b"\xff"):
+            with self.subTest(raw=raw), mock.patch("backend.providers.transport.HTTPSPinnedTransport.fetch", return_value=raw), self.assertRaises(server.ServiceError):
                 server.fetch_serp_json("https://serpapi.com/search.json?api_key=fixture-key")
-        error = urllib.error.HTTPError("https://serpapi.com/search.json?api_key=fixture-key", 429, "Too many", {"Retry-After": "17"}, None)
-        with mock.patch("urllib.request.urlopen", side_effect=error), self.assertRaises(server.ServiceError) as raised:
-            server.fetch_serp_json("https://serpapi.com/search.json?api_key=fixture-key")
-        self.assertEqual(raised.exception.retry_after, 17)
-        self.assertNotIn("fixture-key", str(raised.exception))
+        for error in (server.ServiceError("Provider wire byte limit exceeded.", 413),
+                      server.ServiceError("Provider decompressed byte limit exceeded.", 413),
+                      server.ServiceError("Provider is throttled or unavailable.", 429, 17)):
+            with self.subTest(status=error.status), mock.patch("backend.providers.transport.HTTPSPinnedTransport.fetch", side_effect=error) as fetch, self.assertRaises(server.ServiceError) as raised:
+                server.fetch_serp_json("https://serpapi.com/search.json?api_key=fixture-key")
+            self.assertIs(raised.exception, error)
+            request = fetch.call_args.args[0]
+            self.assertEqual(request.origin, "https://serpapi.com")
+            self.assertEqual(request.max_compressed, 4 * 1024 * 1024)
+            self.assertEqual(request.max_decompressed, 4 * 1024 * 1024)
+            self.assertEqual(request.method, "GET")
+            self.assertIsNone(request.body)
+            self.assertNotIn("fixture-key", repr(request))
+            self.assertNotIn("fixture-key", str(raised.exception))
+
+    def test_transport_success_uses_pinned_request_and_policy_gate(self):
+        with mock.patch("backend.providers.transport.HTTPSPinnedTransport.fetch", return_value=b'{"organic_results": []}') as fetch:
+            self.assertEqual(server.fetch_serp_json("https://serpapi.com/search.json?api_key=fixture-key"), {"organic_results": []})
+        self.policy.assert_called_with("serpapi.paid")
+        self.assertEqual(fetch.call_args.args[0].url, "https://serpapi.com/search.json?api_key=fixture-key")
 
 
 class GroundedWebAgentTests(BackendCase):

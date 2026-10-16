@@ -381,6 +381,7 @@ class GeometryHttpTests(OfflineCase):
     def request(self, path):
         handler = self.server.ApiHandler.__new__(self.server.ApiHandler)
         handler.path = path
+        handler.headers = {"Host": f"127.0.0.1:{self.server.CONFIG.port}"}
         handler.response = None
         handler.send_json = lambda status, body, headers=None: setattr(handler, "response", (status, body, headers))
         self.server.ApiHandler.do_GET(handler)
@@ -444,7 +445,8 @@ class GeometryHttpTests(OfflineCase):
         self.assertTrue(cached["cached"])
         provider.assert_not_called()
 
-    def test_road_transport_uses_safe_reader_shared_queue_cooldown_and_rate_limit_backoff(self):
+    @mock.patch("backend.server.require_service", return_value={"effective_enabled": True})
+    def test_road_transport_uses_safe_reader_shared_queue_cooldown_and_rate_limit_backoff(self, policy):
         server = self.server
         with mock.patch.object(server, "overpass_cooldown_seconds", return_value=0), \
              mock.patch.object(server.OVERPASS_QUEUE, "run", side_effect=lambda task: task()) as queue, \
@@ -464,8 +466,10 @@ class GeometryHttpTests(OfflineCase):
                 server._fetch_map_road_bytes("https://overpass-api.de/api/interpreter")
         self.assertEqual(caught.exception.status, 503)
         self.assertEqual(caught.exception.retry_after, 12)
+        self.assertEqual(policy.call_args_list, [mock.call("overpass.public")] * 3)
 
-    def test_road_cache_uses_verified_document_and_never_persists_partial_coverage(self):
+    @mock.patch("backend.server.require_service", return_value={"effective_enabled": True})
+    def test_road_cache_uses_verified_document_and_never_persists_partial_coverage(self, policy):
         server = self.server
         for partial in (False, True):
             document = {**self.document, "coverage": {"truncated": partial}}
@@ -482,6 +486,7 @@ class GeometryHttpTests(OfflineCase):
              mock.patch.object(server, "fetch_road_geometry") as fetch:
             self.assertTrue(server.load_road_geometry("roads", BOX)["cached"])
         fetch.assert_not_called()
+        self.assertEqual(policy.call_args_list, [mock.call("overpass.public")] * 3)
 
 
 if __name__ == "__main__":

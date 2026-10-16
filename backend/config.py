@@ -70,6 +70,11 @@ class Config:
         "APP_USER_AGENT", "MonoCityExplorer/1.0 (local-development; configure a contact before public traffic)"
     )
     allowed_origins: str = os.getenv("ALLOWED_ORIGINS", "*")
+    settings_ui_origins: tuple[str, ...] = tuple(origin.strip() for origin in os.getenv("SETTINGS_UI_ORIGINS", "").split(",") if origin.strip())
+    service_import_root: str = os.getenv("SERVICE_IMPORT_ROOT", "")
+    service_import_config: str = os.getenv("SERVICE_IMPORT_CONFIG", "")
+    entur_schedule_path: str = os.getenv("ENTUR_SCHEDULE_PATH", "")
+    queensland_schedule_path: str = os.getenv("QUEENSLAND_SCHEDULE_PATH", "")
     overpass_endpoint: str = os.getenv("OVERPASS_ENDPOINT", "https://overpass-api.de/api/interpreter")
     overpass_backoff_seconds: int = max(1, int(os.getenv("OVERPASS_BACKOFF_SECONDS", "120")))
     overture_release: str = os.getenv("OVERTURE_RELEASE", "2026-06-17.0")

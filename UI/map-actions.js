@@ -234,6 +234,7 @@ export class MeridianMapActions {
   }
 
   prepare(input) {
+    this.app.rendererController?.assertCapability('workspace');
     const actions = Array.isArray(input) ? dense(input, 'actions', 1, MAP_ACTION_LIMITS.actions) : [input];
     const layers = [...this.layers], effects = [], touched = new Set();
     const find = (id) => {
@@ -293,10 +294,13 @@ export class MeridianMapActions {
         }
       } else if (action === 'set_view') effects.push({ action, ...view(input) });
       else if (action === 'set_basemap') {
+        if (['terrain', 'spectral'].includes(input.mode) && this.app.serviceReady && !this.app.serviceReady('mapzen.terrarium')) throw new Error('Hosted terrain permission is unresolved.');
+        if (input.mode === 'satellite' && this.app.serviceReady && !this.app.serviceReady('esri.world_imagery') && !this.app.serviceReady('nasa.gibs')) throw new Error('No approved imagery source is enabled.');
         if (!['streets', 'satellite', 'terrain', 'spectral'].includes(input.mode)) throw new Error('Basemap mode must be streets, satellite, terrain or spectral.');
         if (typeof this.app.setMapMode !== 'function') throw new Error('Basemap control is unavailable.');
         effects.push({ action, mode: input.mode });
       } else if (action === 'set_terrain') {
+        if (input.enabled === true && this.app.serviceReady && !this.app.serviceReady('mapzen.terrarium')) throw new Error('Hosted terrain permission is unresolved.');
         if (typeof this.app.setTerrainView !== 'function') throw new Error('Terrain control is unavailable.');
         effects.push({ action, enabled: boolean(input.enabled, 'enabled'), ...(Object.hasOwn(input, 'exaggeration') ? { exaggeration: finite(input.exaggeration, 'exaggeration', 0, 5) } : {}) });
       } else if (action === 'set_display') {

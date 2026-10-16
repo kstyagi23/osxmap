@@ -12,6 +12,7 @@ from pathlib import Path
 
 CHILD = r'''
 import pathlib
+import socket
 import sys
 import unittest
 from unittest import mock
@@ -27,7 +28,9 @@ def safe_read(path, *args, **kwargs):
 
 with mock.patch.object(pathlib.Path, "exists", lambda path: False if path.name == ".env" else exists(path)), \
      mock.patch.object(pathlib.Path, "read_text", safe_read), \
-     mock.patch("urllib.request.urlopen", side_effect=AssertionError("External requests are disabled in backend tests")):
+     mock.patch("urllib.request.urlopen", side_effect=AssertionError("External requests are disabled in backend tests")), \
+     mock.patch("socket.create_connection", side_effect=AssertionError("External sockets are disabled in backend tests")), \
+     mock.patch("socket.getaddrinfo", side_effect=AssertionError("External DNS is disabled in backend tests")):
     from backend import server
     server.SERPAPI_ARCHIVE_DIR = server.CONFIG.database_path.parent / "archive"
     try:
@@ -35,12 +38,18 @@ with mock.patch.object(pathlib.Path, "exists", lambda path: False if path.name =
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     finally:
         server.CACHE.close()
+        if server.SERVICE_SETTINGS is not None:
+            server.SERVICE_SETTINGS.close()
+        if server.PROVIDER_RUNTIME is not None:
+            server.PROVIDER_RUNTIME.close()
+        if server.SERVICE_JOBS is not None:
+            server.SERVICE_JOBS.close()
     sys.exit(0 if result.wasSuccessful() else 1)
 '''
 
 
 def main() -> int:
-    names = sys.argv[1:] or ["backend.test_server", "backend.test_agent_studio", "backend.test_agent_web", "backend.test_agent_population", "backend.test_agent_map_actions", "backend.test_map_geometry", "backend.test_web_sources", "backend.test_raster_sources"]
+    names = sys.argv[1:] or ["backend.test_server", "backend.test_agent_studio", "backend.test_agent_web", "backend.test_agent_population", "backend.test_agent_map_actions", "backend.test_map_geometry", "backend.test_web_sources", "backend.test_raster_sources", "backend.test_service_registry", "backend.test_secret_store", "backend.test_service_settings", "backend.test_service_broker", "backend.test_providers", "backend.test_service_jobs", "backend.test_service_integration", "backend.test_orbits", "backend.test_authenticated", "backend.test_service_readiness", "backend.test_transit"]
     with tempfile.TemporaryDirectory(prefix="meridian-backend-tests-") as directory:
         environment = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ}
         environment.update({

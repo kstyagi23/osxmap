@@ -18,7 +18,7 @@ function storage() {
   return { values, getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: (key) => values.delete(key) };
 }
 
-function fixture({ saved = storage() } = {}) {
+function fixture({ saved = storage(), approvedServices = [] } = {}) {
   const sources = new Map(), layers = new Map([['background', { id: 'background', type: 'background' }], ['geo-route', { id: 'geo-route', type: 'line', paint: { 'line-color': '#ffffff' } }]]), changes = [];
   let camera = { center: [0, 0], zoom: 8, pitch: 0, bearing: 0 };
   const map = {
@@ -42,7 +42,12 @@ function fixture({ saved = storage() } = {}) {
   };
   let registry;
   const app = {
-    map, mapMode: 'satellite', terrainEnabled: false, terrainExaggeration: 1.25, layerPreferences: { roads: true, labels: true }, history: [],
+    map, mapMode: 'route', terrainEnabled: false, terrainExaggeration: 1.25, layerPreferences: { roads: true, labels: true }, history: [],
+    serviceStates: approvedServices.map((id) => {
+      assert(['mapzen.terrarium', 'esri.world_imagery', 'nasa.gibs'].includes(id));
+      return { id, effective_enabled: true };
+    }),
+    serviceReady(id) { return this.serviceStates.some((entry) => entry.id === id && entry.effective_enabled === true); },
     markManualChange() { if (this.undoing) return true; if (this.agentRunId && !this.applyingMapActions) this.agentLocalConflict = true; return false; },
     captureMapAction() { return { overlays: registry.captureSnapshot(), camera: clone(camera) }; },
     recordMapAction(label, before) { this.history.push({ label, before }); },
@@ -375,7 +380,7 @@ test('geometry normalization rejects broken boundaries, invalid positions and at
 });
 
 test('the public singleton facade exposes every requested method and uses the same validated dispatcher', () => {
-  const { api, app, layers, sources } = fixture();
+  const { api, app, layers, sources } = fixture({ approvedServices: ['mapzen.terrarium'] });
   for (const method of ['execute', 'addLayer', 'updateLayer', 'styleLayer', 'setLayerVisibility', 'removeLayer', 'clearLayers', 'moveLayer', 'filterLayer', 'fitLayer', 'setView', 'setBasemap', 'setTerrain', 'setDisplay', 'plotPoints', 'drawLine', 'drawPolygon', 'drawCircle', 'drawRectangle', 'addLabel', 'getLayers', 'getCapabilities', 'exportGeoJSON']) assert.equal(typeof api[method], 'function', method);
   assert.equal(api.addLayer(layer('base')).applied, true);
   assert.equal(api.updateLayer('base', { name: 'Renamed', style: { color: 'blue' } }).applied, true);
@@ -402,7 +407,7 @@ test('the public singleton facade exposes every requested method and uses the sa
 });
 
 test('basemap actions accept four modes through the dispatcher and public API while preserving the streets alias', () => {
-  const { registry, api, app } = fixture();
+  const { registry, api, app } = fixture({ approvedServices: ['mapzen.terrarium', 'esri.world_imagery'] });
   for (const mode of ['streets', 'satellite', 'terrain', 'spectral']) {
     const expected = mode === 'streets' ? 'route' : mode;
     assert.equal(registry.execute({ action: 'set_basemap', mode }, { fromAgent: true }).applied, true);
@@ -413,7 +418,7 @@ test('basemap actions accept four modes through the dispatcher and public API wh
 });
 
 test('basemap validation rejects invalid modes and extra keys atomically and still requires a control', () => {
-  const { registry, api, app } = fixture();
+  const { registry, api, app } = fixture({ approvedServices: ['mapzen.terrarium'] });
   assert.equal(api.setBasemap('spectral').applied, true);
   const historyCount = app.history.length;
   for (const mode of [undefined, null, true, 1, '', 'route', 'Spectral', ' spectral ', 'https://remote/style.json', ['spectral'], { mode: 'spectral' }]) {
@@ -426,6 +431,51 @@ test('basemap validation rejects invalid modes and extra keys atomically and sti
   assert.equal(registry.execute({ action: 'set_basemap', mode: 'spectral', style: {} }).applied, false);
   app.setMapMode = undefined;
   assert.deepEqual(api.setBasemap('spectral'), { applied: false, reason: 'Basemap control is unavailable.' });
+});
+
+test('denied service actions reject the entire batch before overlays, camera or history change', () => {
+  const { registry, api, app, layers, sources } = fixture();
+  const before = clone(registry.captureSnapshot());
+  for (const action of [
+    { action: 'set_basemap', mode: 'terrain' },
+    { action: 'set_basemap', mode: 'spectral' },
+    { action: 'set_basemap', mode: 'satellite' },
+    { action: 'set_terrain', enabled: true },
+  ]) {
+    const result = registry.execute([add('denied'), { action: 'set_view', center: [10, 20] }, action]);
+    assert.equal(result.applied, false);
+    assert.match(result.reason, /permission is unresolved|No approved imagery/);
+    assert.deepEqual(clone(registry.captureSnapshot()), before);
+    assert.equal(app.mapMode, 'route');
+    assert.equal(app.terrainEnabled, false);
+    assert.equal(app.history.length, 0);
+    assert.equal(sources.size, 0);
+    assert.equal(layers.size, 2);
+    assert.deepEqual(app.captureMapAction().camera.center, [0, 0]);
+  }
+  app.serviceStates = [{ id: 'mapzen.terrarium', enabled: true, effective_enabled: false }];
+  assert.equal(api.setTerrain(true).applied, false, 'Requested enabled never overrides the effective decision');
+  assert.equal(api.setTerrain(false).applied, true);
+  assert.equal(api.setBasemap('streets').applied, true);
+});
+
+test('renderer capability blocks both agent and public action dispatch without mutation', () => {
+  const { registry, api, app, layers, sources } = fixture();
+  const checked = [];
+  app.rendererController = { assertCapability(capability) { checked.push(capability); throw new Error('workspace is not supported in cesium'); } };
+  const result = registry.execute([add('blocked'), { action: 'set_view', center: [10, 20] }], { fromAgent: true });
+  assert.equal(result.applied, false);
+  assert.match(result.reason, /not supported in cesium/);
+  assert.equal(api.addLayer(layer('blocked')).applied, false);
+  assert.deepEqual(checked, ['workspace', 'workspace']);
+  assert.equal(sources.size, 0);
+  assert.equal(layers.size, 2);
+  assert.equal(app.history.length, 0);
+  assert.deepEqual(app.captureMapAction().camera.center, [0, 0]);
+  app.rendererController = { assertCapability(capability) { assert.equal(capability, 'workspace'); } };
+  assert.equal(api.addLayer(layer('allowed')).applied, true);
+  assert.equal(sources.size, 1);
+  assert.equal(api.getLayers()[0].id, 'allowed');
 });
 
 test('geodesic circles use explicit radius meters and split the dateline rather than fabricating a bbox', () => {

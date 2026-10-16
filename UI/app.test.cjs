@@ -115,7 +115,7 @@ function parseHtml(html) {
   return root;
 }
 
-function setup({ mobile = false } = {}) {
+function setup({ mobile = false, approvedServices = [] } = {}) {
   const document = parseHtml(readFileSync(join(__dirname, 'index.html'), 'utf8'));
   document.getElementById = (id) => document.querySelectorAll('[id]').find((element) => element.id === id) || null;
   document.createElement = (tag) => new Element(tag);
@@ -152,7 +152,12 @@ function setup({ mobile = false } = {}) {
   const app = Object.create(context.CityExplorer.prototype);
   app.elements = Object.fromEntries(document.querySelectorAll('[id]').map((element) => [element.id, element]));
   Object.assign(app, {
-    theme: 'dark', mapMode: 'satellite', terrainEnabled: false, contourStrength: .55, terrainExaggeration: 1.25,
+    theme: 'dark', mapMode: 'route', terrainEnabled: false, contourStrength: .55, terrainExaggeration: 1.25,
+    // Simulate reviewed backend decisions only in focused legacy behavior fixtures.
+    serviceStates: approvedServices.map((id) => {
+      assert(['mapzen.terrarium', 'esri.world_imagery', 'nasa.gibs', 'cesiumjs.library'].includes(id));
+      return { id, effective_enabled: true, state: 'ready' };
+    }),
     spectralTileUrl: 'spectral://terrain/{z}/{x}/{y}',
     worker: {}, country: { countryCode: 'US' }, selected: null,
     suggestionIndex: -1, suggestionController: null, searchController: null,
@@ -383,8 +388,30 @@ test('spectral styles the altitude raster and contours without leaking into othe
   }
 });
 
+test('unapproved services keep streets flat and never request hosted imagery or DEM data', async () => {
+  const { app, requests, document } = metadataSetup();
+  assert.equal(app.mapMode, 'route');
+  app.map.setTerrain = () => assert.fail('Denied relief must not reach the renderer');
+  app.map.easeTo = () => assert.fail('Denied relief must not move the camera');
+  app.contourDem = { getDemTile: () => assert.fail('Denied terrain must not request a tile') };
+  app.setMapMode = Object.getPrototypeOf(app).setMapMode;
+  app.setMapMode('spectral');
+  assert.equal(app.mapMode, 'route');
+  assert.match(document.getElementById('map-notice').textContent, /permission is unresolved/);
+  app.setMapMode('satellite');
+  assert.equal(app.mapMode, 'route');
+  assert.match(document.getElementById('map-notice').textContent, /No approved imagery/);
+  app.setTerrainView(true);
+  assert.equal(app.terrainEnabled, false);
+  assert.deepEqual(Array.from(await app.sampleElevationPoints([{ lon: 0, lat: 0 }], 13)), [null]);
+  app.mapMode = 'satellite';
+  await app.refreshImageryMetadata(app.mapMetadataSnapshot(), 1);
+  assert.equal(requests.length, 0);
+  assert.match(document.getElementById('context-imagery').textContent, /permission|approved/i);
+});
+
 test('spectral raster source is capped at DEM zoom and inserted above fills below hillshade', () => {
-  const { app } = setup();
+  const { app } = setup({ approvedServices: ['mapzen.terrarium'] });
   const layers = [{ id: 'background', type: 'background' }, { id: 'land', type: 'fill' }, { id: 'water', type: 'fill', source: 'openmaptiles', 'source-layer': 'water', filter: ['==', 'class', 'ocean'] }, { id: 'road', type: 'line' }, { id: 'label', type: 'symbol' }];
   const sources = new Map(); const anchors = new Map();
   app.map = {
@@ -407,7 +434,7 @@ test('spectral raster source is capped at DEM zoom and inserted above fills belo
 });
 
 test('entering spectral enables 3D once, reselecting respects disabled relief and leaving preserves camera', () => {
-  const { app, context } = setup();
+  const { app, context } = setup({ approvedServices: ['mapzen.terrarium', 'esri.world_imagery'] });
   const cameras = []; const terrains = []; const storage = new Map();
   context.localStorage = { setItem: (key, value) => storage.set(key, value) };
   app.map = { getSource: () => ({}), setTerrain: (value) => terrains.push(value), easeTo: (value) => cameras.push(value) };
@@ -441,7 +468,7 @@ function spectralElements(result) {
 }
 
 test('spectral console uses actual camera and center samples, not unrelated selected locations', async () => {
-  const { app, document, move } = spectralElements(metadataSetup());
+  const { app, document, move } = spectralElements(metadataSetup(['mapzen.terrarium']));
   app.mapMode = 'spectral';
   document.getElementById('info-drawer-content').hidden = true;
   app.selected = { name: 'Alps', lon: 7.96, lat: 46.58 };
@@ -461,7 +488,7 @@ test('spectral console uses actual camera and center samples, not unrelated sele
 });
 
 test('spectral controls reuse terrain, preferences and guarded history without inventing selections', async () => {
-  const { app, document, context } = spectralElements(setup());
+  const { app, document, context } = spectralElements(setup({ approvedServices: ['mapzen.terrarium'] }));
   const cameras = []; const terrains = []; const storage = new Map();
   context.localStorage = { setItem: (key, value) => storage.set(key, value) };
   app.workspaceReady = true; app.mapMode = 'spectral'; app.terrainEnabled = true;
@@ -500,7 +527,7 @@ test('spectral controls reuse terrain, preferences and guarded history without i
 });
 
 test('local spectral mode and contour commands are accepted without switching back to terrain', () => {
-  const { app } = setup();
+  const { app } = setup({ approvedServices: ['mapzen.terrarium'] });
   assert.equal(app.applyLocalInstruction('Show spectral mode'), true);
   assert.equal(app.mapMode, 'spectral');
   assert.match(app.elements['agent-result-summary'].textContent, /Spectral/);
@@ -509,7 +536,7 @@ test('local spectral mode and contour commands are accepted without switching ba
 });
 
 test('saved spectral view restores disabled 3D and exact camera without mode-entry pitch changes', async () => {
-  const { app, context } = setup();
+  const { app, context } = setup({ approvedServices: ['mapzen.terrarium'] });
   const saved = { mapMode: 'spectral', terrainEnabled: false, terrainExaggeration: 2.25, camera: { center: [7.96, 46.58], zoom: 11.5, pitch: 0, bearing: 18 }, layerPreferences: { labels: false } };
   const storage = new Map([['meridian.explore.v1', JSON.stringify(saved)]]);
   context.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
@@ -530,7 +557,7 @@ test('saved spectral view restores disabled 3D and exact camera without mode-ent
 });
 
 test('spectral terrain clicks sample true sea level and reject results after leaving spectral', async () => {
-  const { app, window } = setup();
+  const { app, window } = setup({ approvedServices: ['mapzen.terrarium'] });
   app.mapMode = 'spectral'; app.map = { getZoom: () => 11 };
   window.maplibregl = { Popup: class {
     setLngLat(value) { this.coordinates = value; return this; }
@@ -1119,7 +1146,7 @@ test('missing geography context does not silently bias search to zero coordinate
 });
 
 test('DEM sampling caps zoom, groups tiles, preserves sea level, and handles missing coverage', async () => {
-  const { app } = setup();
+  const { app } = setup({ approvedServices: ['mapzen.terrarium'] });
   const calls = [];
   app.contourDem = { getDemTile: async (z, x, y) => {
     calls.push([z, x, y]);
@@ -1137,20 +1164,22 @@ test('DEM sampling caps zoom, groups tiles, preserves sea level, and handles mis
 });
 
 test('DEM sampling wraps antimeridian coordinates and abort settles without waiting for shared tile work', async () => {
-  const { app } = setup();
+  const { app } = setup({ approvedServices: ['mapzen.terrarium'] });
   assert.equal(app.metadataTilePoint({ lon: 180, lat: 0 }, 13).x, 0);
   assert.equal(app.metadataTilePoint({ lon: -180, lat: 0 }, 13).x, 0);
   assert.equal(app.metadataTilePoint({ lon: 0, lat: 90 }, 13).y, 0);
   assert.equal(app.metadataTilePoint({ lon: 0, lat: -90 }, 13).y, 8191);
-  app.contourDem = { getDemTile: () => new Promise(() => {}) };
+  let tileRequests = 0;
+  app.contourDem = { getDemTile: () => { tileRequests += 1; return new Promise(() => {}); } };
   const controller = new AbortController();
   const work = app.sampleElevationPoints([{ lon: 0, lat: 0 }], 13, controller);
+  assert.equal(tileRequests, 1, 'The abort must cancel real pending tile work, not a denied no-op');
   controller.abort();
   assert.equal((await work)[0], null);
 });
 
-function metadataSetup() {
-  const result = setup();
+function metadataSetup(approvedServices = []) {
+  const result = setup({ approvedServices });
   let center = { lat: 37.7749, lng: -122.4194 };
   result.app.map = {
     getCenter: () => center, getCanvas: () => ({ clientWidth: 1440, clientHeight: 1000 }),
@@ -1165,7 +1194,7 @@ function metadataSetup() {
 }
 
 test('elevation metadata is unexaggerated and explicitly labels a sampled range, not exact extrema', async () => {
-  const { app, document } = metadataSetup();
+  const { app, document } = metadataSetup(['mapzen.terrarium']);
   const snapshot = app.mapMetadataSnapshot();
   assert.equal(await app.refreshElevationMetadata(snapshot, 1), true);
   assert.equal(document.getElementById('context-center-elevation').textContent, '~42 m');
@@ -1175,7 +1204,7 @@ test('elevation metadata is unexaggerated and explicitly labels a sampled range,
 });
 
 test('camera changes reject late DEM values rather than displaying an old elevation for the new view', async () => {
-  const { app, document, move } = metadataSetup();
+  const { app, document, move } = metadataSetup(['mapzen.terrarium']);
   let complete;
   app.contourDem.getDemTile = () => new Promise((resolve) => { complete = resolve; });
   const snapshot = app.mapMetadataSnapshot();
@@ -1187,7 +1216,8 @@ test('camera changes reject late DEM values rather than displaying an old elevat
 });
 
 test('imagery metadata uses center-footprint citations, handles dates, and stays available without DEM', async () => {
-  const { app, requests, document } = metadataSetup();
+  const { app, requests, document } = metadataSetup(['esri.world_imagery']);
+  app.mapMode = 'satellite';
   app.contourDem = null;
   const snapshot = app.mapMetadataSnapshot();
   assert.equal(snapshot.imageryLod, 13);
@@ -1205,7 +1235,8 @@ test('imagery metadata uses center-footprint citations, handles dates, and stays
 });
 
 test('imagery metadata does not invent an acquisition date when the provider omits it', async () => {
-  const { app, requests, document } = metadataSetup();
+  const { app, requests, document } = metadataSetup(['esri.world_imagery']);
+  app.mapMode = 'satellite';
   const work = app.refreshImageryMetadata(app.mapMetadataSnapshot(), 1);
   requests[0].resolve({ ok: true, json: async () => ({ features: [{ attributes: { NICE_NAME: 'TerraColor', SRC_DATE: null, SRC_DATE2: null } }] }) });
   await work;
@@ -1258,34 +1289,38 @@ function cacheSetup() {
 
 const imageryTile = 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/12/1582/654';
 
-test('satellite cache refreshes old imagery while reusing bounded fresh tiles', async () => {
+test('approved OpenFreeMap cache reuses fresh tiles and refreshes expired tiles', async () => {
   const cache = cacheSetup();
-  cache.cached(imageryTile, 30 * 60 * 1000);
-  assert.equal(await (await cache.dispatch(imageryTile)).text(), 'cached tile');
+  const tile = 'https://tiles.openfreemap.org/planet/12/1582/654.pbf';
+  cache.cached(tile, 24 * 60 * 60 * 1000);
+  assert.equal(await (await cache.dispatch(tile)).text(), 'cached tile');
   assert.equal(cache.network.length, 0);
-  cache.cached(imageryTile, 61 * 60 * 1000);
-  assert.equal(await (await cache.dispatch(imageryTile)).text(), 'fresh tile');
+  cache.cached(tile, 8 * 24 * 60 * 60 * 1000);
+  assert.equal(await (await cache.dispatch(tile)).text(), 'fresh tile');
   assert.equal(cache.network.length, 1);
-  assert.equal(cache.network[0].options.cache, 'no-cache');
+  assert.equal(cache.network[0].url, tile);
+  assert.equal(await cache.data.get(tile).text(), 'fresh tile');
 });
 
-test('satellite cache honors shorter provider TTL and never intercepts no-store requests or citations', async () => {
+test('map cache never intercepts unapproved imagery, DEM endpoints or citations', async () => {
   const cache = cacheSetup();
-  cache.cached(imageryTile, 61 * 1000, 'max-age=60');
-  await cache.dispatch(imageryTile);
-  assert.equal(cache.network.length, 1);
+  cache.cached(imageryTile, 0);
+  assert.equal(await cache.dispatch(imageryTile), null);
   assert.equal(await cache.dispatch(imageryTile, { cache: 'no-store' }), null);
   assert.equal(await cache.dispatch('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/4/query?f=json'), null);
+  assert.equal(await cache.dispatch('https://elevation-tiles-prod.s3.amazonaws.com/terrarium/13/100/200.png'), null);
+  assert.equal(await cache.dispatch('https://tiles.openfreemap.org.evil.example/tile.pbf'), null);
+  assert.equal(cache.network.length, 0);
 });
 
-test('satellite cache declines stale fallback while DEM caching remains compatible with the configured endpoint', async () => {
+test('approved map cache rejects expired offline fallback while fresh tiles remain usable', async () => {
   const cache = cacheSetup();
   cache.context.fetch = async () => { throw new Error('Offline'); };
-  cache.cached(imageryTile, 2 * 60 * 60 * 1000);
-  await assert.rejects(cache.dispatch(imageryTile), /Offline/);
-  const dem = 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/13/100/200.png';
-  cache.cached(dem, 24 * 60 * 60 * 1000);
-  assert.equal(await (await cache.dispatch(dem)).text(), 'cached tile');
+  const tile = 'https://tiles.openfreemap.org/planet/12/1582/654.pbf';
+  cache.cached(tile, 7 * 24 * 60 * 60 * 1000);
+  await assert.rejects(cache.dispatch(tile), /Offline/);
+  cache.cached(tile, 24 * 60 * 60 * 1000);
+  assert.equal(await (await cache.dispatch(tile)).text(), 'cached tile');
 });
 
 test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite view', () => {
@@ -1295,6 +1330,10 @@ test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite
   context.ResizeObserver = class { observe() {} };
   context.requestAnimationFrame = () => 1;
   context.localStorage = { setItem() {} };
+  context.createServiceClient = () => ({});
+  context.initServiceSettings = () => ({ refresh: () => new Promise(() => {}) });
+  context.createLiveLayers = () => ({});
+  context.createRendererController = () => ({ renderer: 'maplibre' });
   window.maplibregl = {
     Map: class {
       constructor(value) { options = value; }
@@ -1322,6 +1361,7 @@ test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite
   assert.equal(app.elements['info-drawer-content'].hidden, true);
   app.setMapMode = Object.getPrototypeOf(app).setMapMode;
   app.applyMapMode = () => {};
+  app.serviceStates = ['esri.world_imagery', 'mapzen.terrarium'].map((id) => ({ id, effective_enabled: true }));
   app.setMapMode('satellite');
   assert.equal(app.terrainEnabled, false);
   app.terrainEnabled = true;
@@ -1331,7 +1371,8 @@ test('rendering uses MapLibre antialiasing and preserves explicit flat Satellite
 });
 
 test('regional imagery is gated by the entire viewport, native zoom, pitch, and explicit preference', () => {
-  const { app } = setup();
+  const { app } = setup({ approvedServices: ['nasa.gibs'] });
+  app.mapMode = 'satellite';
   let zoom = 11;
   let pitch = 0;
   let west = -122.7;
@@ -1372,7 +1413,8 @@ test('regional imagery is gated by the entire viewport, native zoom, pitch, and 
 });
 
 test('regional imagery metadata does not attach aerial citations to Sentinel pixels', async () => {
-  const { app, document, requests } = metadataSetup();
+  const { app, document, requests } = metadataSetup(['nasa.gibs']);
+  app.mapMode = 'satellite';
   app.regionalImageryActive = true;
   assert.equal(await app.refreshImageryMetadata(app.mapMetadataSnapshot(), 1), true);
   assert.match(document.getElementById('context-imagery').textContent, /NASA.*Sentinel-2.*30 m/);
@@ -1674,7 +1716,7 @@ test('map mode and layer buttons synchronize before the map style loads', () => 
 });
 
 test('normal-motion terrain commands retain guarded undo without an operator workspace', async () => {
-  const { app, window } = setup();
+  const { app, window } = setup({ approvedServices: ['mapzen.terrarium'] });
   window.matchMedia = () => ({ matches: false });
   app.map = { getSource: () => ({}), setTerrain() {}, easeTo() {} };
   const before = app.captureMapAction();
@@ -1885,6 +1927,26 @@ test('invalid or unknown agent action batches have no mutations and their visual
   assert.equal(app.elements['agent-panel'].hidden, false);
   assert.equal(app.applyAgentMapUpdate({ bogus: true }), false);
   assert.equal(app.applyAgentMapUpdate({}), false);
+});
+
+test('Globe rejects mixed agent updates without altering geography, overlays or history', () => {
+  const { app, add, api } = overlaySetup();
+  const checked = [];
+  app.rendererController = {
+    renderer: 'cesium',
+    hasCapability(capability) { checked.push(capability); return capability === 'camera' || capability === 'globe'; },
+  };
+  const before = JSON.stringify(app.captureMapAction());
+  assert.equal(app.applyAgentMapUpdate({ researchArea: studyExtent(), actions: [add] }), false);
+  assert.deepEqual(checked, ['workspace']);
+  assert.equal(JSON.stringify(app.captureMapAction()), before);
+  assert.equal(api.getLayers().length, 0);
+  assert.equal((app.mapActions || []).length, 0);
+  assert.match(app.elements['map-notice'].textContent, /unsupported in Globe.*MapLibre/);
+  app.rendererController = { renderer: 'maplibre', hasCapability: () => true, assertCapability() {} };
+  assert.equal(app.applyAgentMapUpdate({ researchArea: studyExtent(), actions: [add] }), true);
+  assert.equal(app.researchArea.name, 'Noida');
+  assert.equal(api.getLayers()[0].id, 'city');
 });
 
 test('mixed geographic updates do not skip declared actions and invalid batches apply neither branch', () => {

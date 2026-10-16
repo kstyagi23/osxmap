@@ -1,6 +1,11 @@
 // Monument is local-only. A hosting page may set a different loopback API URL
 // before app.js, but shared URLs and persisted browser state cannot override it.
-const DEFAULT_API_URL = 'http://127.0.0.1:8787';
+const DEFAULT_API_URL = (() => {
+  try {
+    const url = new URL(window.location.href);
+    return ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) && url.port === '8787' ? url.origin : 'http://127.0.0.1:8787';
+  } catch { return 'http://127.0.0.1:8787'; }
+})();
 
 function loopbackApiUrl(value) {
   if (typeof value !== 'string' || !value) return DEFAULT_API_URL;

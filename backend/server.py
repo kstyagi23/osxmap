@@ -12,6 +12,9 @@ import hashlib
 import heapq
 import json
 import math
+import mimetypes
+import os
+import sys
 import re
 import signal
 import sqlite3
@@ -42,6 +45,7 @@ try:
     from .raster_sources import load_population_grid, load_raster_grid
     from .realtime import RealtimeHub
     from .web_sources import fetch_public_bytes, fetch_web_document, validate_web_url
+    from .service_broker import BrokerError, LocalBroker
 except ImportError:  # Supports `python server.py` from the backend directory.
     from agent import MapAgentService
     from agent_tools import AgentDependencies, AgentTools
@@ -52,6 +56,7 @@ except ImportError:  # Supports `python server.py` from the backend directory.
     from raster_sources import load_population_grid, load_raster_grid
     from realtime import RealtimeHub
     from web_sources import fetch_public_bytes, fetch_web_document, validate_web_url
+    from service_broker import BrokerError, LocalBroker
 
 
 EARTH_RADIUS = 6_371_008.8
@@ -63,6 +68,98 @@ OPENBUILDINGMAP_CATALOG_TTL_SECONDS = 600
 SERPAPI_ARCHIVE_DIR = BACKEND_DIR / "logs" / "serpapi"
 CONFIG = Config()
 REQUEST_GATE = threading.BoundedSemaphore(CONFIG.max_concurrent_requests)
+SETTINGS_BROKER = LocalBroker(CONFIG.port, CONFIG.settings_ui_origins)
+UI_ROOT = BACKEND_DIR.parent / "UI"
+SERVICE_LOCK = threading.RLock()
+SERVICE_SETTINGS = None
+PROVIDER_RUNTIME = None
+SERVICE_JOBS = None
+
+
+def service_foundation():
+    """Open separate backend-owned settings lazily, never during test imports."""
+    global SERVICE_SETTINGS, PROVIDER_RUNTIME, SERVICE_JOBS
+    with SERVICE_LOCK:
+        if SERVICE_SETTINGS is None:
+            if not __package__ and str(BACKEND_DIR.parent) not in sys.path:
+                sys.path.insert(0, str(BACKEND_DIR.parent))
+            from backend import service_registry
+            from backend.secret_store import SecretStore
+            from backend.service_settings import ServiceSettings
+            from backend.providers.adapters import ADAPTERS
+            from backend.providers.runtime import ProviderRuntime
+            from backend.providers.quota import QuotaStore
+            from backend.providers.transit import TransitAdapter, load_schedule
+            from backend.service_jobs import LocalJobManager, SUPPORTED_WORKFLOWS
+            directory = CONFIG.database_path.parent
+            directory.mkdir(parents=True, exist_ok=True)
+            adapters = dict(ADAPTERS)
+            for product, schedule_path in (('entur.open_data', CONFIG.entur_schedule_path), ('translink.queensland', CONFIG.queensland_schedule_path)):
+                if schedule_path:
+                    try:
+                        adapters[product] = TransitAdapter(product, schedule=load_schedule(schedule_path, product))
+                    except (ServiceError, OSError, ValueError):
+                        pass
+            dependencies = {"adapter:" + key: True for key, adapter in adapters.items() if not adapter.blocker}
+            dependencies.update({key: True for key in (
+                "adapter:openfreemap.public", "adapter:nasa.gibs", "adapter:nominatim.public",
+                "adapter:worldpop.public", "adapter:cdse.catalogue", "library:maplibre.library", "library:cesiumjs.library",
+                "workflow:overture.base", "workflow:openbuildingmap.downloads",
+                "adapter:serpapi.paid")})
+            dependencies["adapter:openai.api"] = CONFIG.openai_base_url in {"https://api.openai.com/v1", "https://api.openai.com/v1/chat/completions"}
+            dependencies.update({"workflow:" + product: True for product in SUPPORTED_WORKFLOWS})
+            SERVICE_SETTINGS = ServiceSettings(directory / "services.db", SecretStore(directory / "credentials"),
+                registry=service_registry, environment=dict(os.environ), dependencies=dependencies,
+                cancel=cancel_service)
+            PROVIDER_RUNTIME = ProviderRuntime(QuotaStore(directory / "service-quota.db"), policy_gate=lambda product, query: service_state(product), credentials=SERVICE_SETTINGS.resolve_credentials, adapters=adapters)
+            sources = {}
+            if CONFIG.service_import_config:
+                try:
+                    with Path(CONFIG.service_import_config).open('rb') as document:
+                        raw = document.read(262145)
+                    if len(raw) > 262144:
+                        raise ValueError()
+                    sources = json.loads(raw)
+                    if not isinstance(sources, dict):
+                        raise ValueError()
+                except (OSError, ValueError):
+                    sources = {}
+            SERVICE_JOBS = LocalJobManager(CONFIG.service_import_root or None, sources=sources, policy_gate=service_state)
+        return SERVICE_SETTINGS, PROVIDER_RUNTIME
+
+
+def service_state(product):
+    settings, _ = service_foundation()
+    return next((item for item in settings.snapshot()["services"] if item["id"] == product),
+                {"effective_enabled": False, "state": "permission_blocked", "reasons": ["Unknown product"]})
+
+
+def require_service(product):
+    state = service_state(product)
+    if not state["effective_enabled"]:
+        raise ServiceError("Service unavailable under current policy: " + product + " (" + state["state"] + ")", 403)
+    return state
+
+
+def cancel_service(product):
+    if PROVIDER_RUNTIME is not None:
+        PROVIDER_RUNTIME.cancel_provider(product)
+    if SERVICE_JOBS is not None:
+        SERVICE_JOBS.cancel_service(product)
+    if product.startswith("openai.") and "AGENT" in globals():
+        with AGENT._lock:
+            for run in AGENT._runs.values():
+                run.cancelled.set()
+
+
+def service_mutation_error(error):
+    from backend.service_settings import RevisionConflict, SettingsError
+    from backend.secret_store import SecretStoreError
+    if isinstance(error, RevisionConflict):
+        return ServiceError("Settings revision changed; reload before saving.", 409)
+    if isinstance(error, (SettingsError, SecretStoreError)):
+        return ServiceError(str(error), 400)
+    return error
 
 
 class SerialQueue:
@@ -830,16 +927,31 @@ def fetch_serp_response(params: dict[str, Any]) -> Any:
     key = serp_request_key(request)
 
     def task() -> Any:
+        require_service("serpapi.paid")
         stored = CACHE.get_provider_response("serpapi", key)
         if stored is not None:
             validate_serp_payload(stored)
             return redact_provider_payload(stored)
-        if not CONFIG.serp_api_key:
+        credentials = service_foundation()[0].resolve_credentials("serpapi.paid")
+        credential = CONFIG.serp_api_key or credentials.get("api_key", "")
+        if not credential:
             raise ServiceError("SerpApi is not configured and this request is not stored locally.", 503)
-        payload = fetch_serp_json(
-            "https://serpapi.com/search.json?" + urllib.parse.urlencode({**request, "api_key": CONFIG.serp_api_key}),
-        )
-        validate_serp_payload(payload)
+        from backend.providers.quota import QuotaRule
+        state = require_service("serpapi.paid")
+        quota = service_foundation()[1].quota
+        limit = min(100, int(state.get("limits", {}).get("requests_month", 100)))
+        if limit < 1:
+            raise ServiceError("Local search quota exhausted.", 429)
+        token = quota.reserve("serpapi.paid", "local", (QuotaRule(limit=limit, calendar="month"),))
+        try:
+            payload = fetch_serp_json(
+                "https://serpapi.com/search.json?" + urllib.parse.urlencode({**request, "api_key": credential}),
+            )
+            validate_serp_payload(payload)
+        except Exception:
+            quota.finish(token, ambiguous=True)
+            raise
+        quota.finish(token)
         CACHE.put_provider_response("serpapi", key, request, payload)
         return redact_provider_payload(payload)
 
@@ -859,22 +971,13 @@ def validate_serp_payload(payload: Any) -> None:
 
 def fetch_serp_json(url: str) -> dict[str, Any]:
     """Read only a fixed SerpApi endpoint with bounded JSON and safe errors."""
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "Accept-Encoding": "identity"})
+    require_service("serpapi.paid")
+    from backend.providers.transport import HTTPSPinnedTransport, Request
+    raw = HTTPSPinnedTransport().fetch(Request(url, "https://serpapi.com", max_compressed=4 * 1024 * 1024, max_decompressed=4 * 1024 * 1024))
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            final = urllib.parse.urlsplit(response.geturl())
-            if final.scheme != "https" or final.hostname != "serpapi.com" or final.username or final.password:
-                raise ServiceError("SerpApi redirected to an unsupported endpoint.", 503)
-            raw = response.read(4 * 1024 * 1024 + 1)
-            if len(raw) > 4 * 1024 * 1024:
-                raise ServiceError("SerpApi response exceeded the 4 MB limit.", 503)
-            payload = json.loads(raw.decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        if error.code == 429:
-            raise ServiceError("SerpApi is rate limiting requests.", 503, retry_after_seconds(error.headers.get("Retry-After"))) from None
-        raise ServiceError(f"SerpApi returned HTTP {error.code}.", 503) from None
-    except (urllib.error.URLError, OSError, UnicodeError, ValueError):
-        raise ServiceError("SerpApi returned invalid data or could not be reached.", 503) from None
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ServiceError("SerpApi returned invalid JSON.", 502) from None
     if not isinstance(payload, dict):
         raise ServiceError("SerpApi returned an invalid search response.", 503)
     return payload
@@ -1081,6 +1184,7 @@ def location_result(item: dict[str, Any]) -> dict[str, Any] | None:
 
 def nominatim_search(query: str, country_code: str, limit: int) -> list[dict[str, Any]]:
     def task() -> list[dict[str, Any]]:
+        require_service("nominatim.public")
         params = {"q": query, "format": "jsonv2", "addressdetails": "1", "limit": str(limit), "featuretype": "city"}
         country = country_param(country_code)
         if country and "," not in query:
@@ -1169,6 +1273,7 @@ def place_from_nominatim(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def search_nominatim_places(query: str, country_code: str, lat: float | None, lon: float | None) -> list[dict[str, Any]]:
+    require_service("nominatim.public")
     def task() -> list[dict[str, Any]]:
         params = {"q": query, "format": "jsonv2", "addressdetails": "1", "limit": "8"}
         country = country_param(country_code)
@@ -1297,11 +1402,9 @@ def suggest_map_locations(query: str, country_code: str) -> list[dict[str, Any]]
     saved = saved_place_matches(query, country_code)
     if saved:
         return [map_location(place, cached=True) for place in saved[:8]]
-    try:
-        return suggest_locations(query, country_code)
-    except ServiceError:
-        discovery = lookup_places(query, country_code, None, None)
-        return [map_location(place, cached=discovery["stored"]) for place in discovery["results"][:8]]
+    # Public Nominatim forbids autocomplete, including fallback providers.
+    cached = CACHE.get_suggestions(normalize_query(query), country_param(country_code))
+    return cached or []
 
 
 PLACE_LOOKUP_POLICY_VERSION = "osm-first-v2"
@@ -1477,6 +1580,7 @@ def lookup_places(query: str, country_code: str, lat: float | None, lon: float |
 def detect_country(lat: float | None, lon: float | None) -> dict[str, str]:
     if lat is not None and lon is not None and math.isfinite(lat) and math.isfinite(lon):
         def task() -> dict[str, str]:
+            require_service("nominatim.public")
             url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode({"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 3})
             payload = fetch_json(url, {"User-Agent": CONFIG.user_agent, "Referer": "http://localhost/", "Accept": "application/json"}, 10)
             address = payload.get("address") or {}
@@ -1628,6 +1732,7 @@ def valid_polygon(geometry: Any) -> dict[str, Any] | None:
 
 
 def osrm_route(profile: str, waypoints: list[list[float]]) -> dict[str, Any] | None:
+    require_service("fossgis.routing")
     if profile != CONFIG.osm_router_profile or profile != "driving":
         raise ServiceError("Only the configured driving profile is available from the public OSM router.", 400)
     coordinate_path = ";".join(f"{lon:.6f},{lat:.6f}" for lon, lat in waypoints)
@@ -1955,6 +2060,7 @@ def _map_geometry_cache_key(kind: str, request: Any) -> str:
 
 
 def load_city_geometry(city: dict[str, Any]) -> dict[str, Any]:
+    require_service("nominatim.public")
     key = _map_geometry_cache_key("city", {name: value for name, value in city.items() if name != "cached"}) if isinstance(city, dict) else ""
     cached = CACHE.get_geocode(key) if key else None
     if cached is not None:
@@ -1965,6 +2071,7 @@ def load_city_geometry(city: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fetch_map_road_bytes(url: str, **limits: Any) -> dict[str, Any]:
+    require_service("overpass.public")
     def task() -> dict[str, Any]:
         cooldown = overpass_cooldown_seconds()
         if cooldown:
@@ -1984,6 +2091,7 @@ def _fetch_map_road_bytes(url: str, **limits: Any) -> dict[str, Any]:
 
 
 def load_road_geometry(query: str, bounds: list[float], classes: list[str] | None = None) -> dict[str, Any]:
+    require_service("overpass.public")
     key = _map_geometry_cache_key("roads", {"query": query, "bounds": bounds, "classes": classes,
                                           "endpoint": CONFIG.overpass_endpoint})
     cached = CACHE.get_geocode(key)
@@ -2011,12 +2119,13 @@ AGENT_TOOLS = AgentTools(AgentDependencies(
     restore_workspace=CACHE.restore_workspace,
     search_web=search_serp_web,
     read_web_source=fetch_web_document,
-    load_population=load_population_grid,
+    load_population=lambda *args, **kwargs: (require_service("worldpop.public"), load_population_grid(*args, **kwargs))[1],
     read_raster_source=load_raster_grid,
     load_city_geometry=load_city_geometry,
     load_road_geometry=load_road_geometry,
 ))
-AGENT = MapAgentService(OpenAIChatClient(CONFIG), AGENT_TOOLS, REALTIME)
+AGENT = MapAgentService(OpenAIChatClient(CONFIG, policy_gate=lambda: require_service("openai.api"),
+    credentials=lambda: service_foundation()[0].resolve_credentials("openai.api")), AGENT_TOOLS, REALTIME)
 
 
 def meters(value: Any) -> float:
@@ -2240,6 +2349,7 @@ def pause_overpass(seconds: int) -> int:
 
 
 def fetch_overpass_payload(query: str) -> dict[str, Any]:
+    require_service("overpass.public")
     """Run a trusted, bounded Overpass query through the shared cooldown policy."""
     cooldown = overpass_cooldown_seconds()
     if cooldown:
@@ -2575,6 +2685,7 @@ def openbuildingmap_files() -> list[dict[str, str]]:
 
 
 def fetch_openbuildingmap_buildings(x: int, y: int, z: int) -> list[dict[str, Any]]:
+    require_service("openbuildingmap.hosted")
     target = quadkey(x, y, z)
     files = [item for item in openbuildingmap_files() if target.startswith(item["quadkey"])]
     if not files:
@@ -2608,6 +2719,7 @@ REMOTE_OVERTURE_UNAVAILABLE_UNTIL = 0.0
 
 
 def fetch_overture_buildings(bbox: list[float]) -> list[dict[str, Any]]:
+    require_service("overture.base")
     global REMOTE_OVERTURE_UNAVAILABLE_UNTIL
     if CONFIG.disable_overture:
         return []
@@ -2673,6 +2785,7 @@ def tile_stats(features: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def get_source_tile(x: int, y: int, z: int, source: str) -> dict[str, Any]:
+    require_service({"openbuildingmap": "openbuildingmap.hosted", "openstreetmap": "overpass.public", "overture": "overture.base"}.get(source, "unknown"))
     key = quadkey(x, y, z)
     if source == "openbuildingmap":
         tile_id = f"obm-v2:{key}"
@@ -3056,6 +3169,9 @@ def parse_number(value: str | None) -> float | None:
 def limited_request(method: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(method)
     def wrapped(handler: Any, *args: Any, **kwargs: Any) -> Any:
+        if handler.headers.get('Host', '').lower() not in SETTINGS_BROKER.hosts:
+            handler.send_json(403, {"error": "Untrusted local Host header"})
+            return None
         if not REQUEST_GATE.acquire(blocking=False):
             handler.send_json(503, {"error": "The local data service is busy. Try again shortly."}, {"Retry-After": "1"})
             return None
@@ -3071,9 +3187,12 @@ class ApiHandler(BaseHTTPRequestHandler):
     server_version = "MonumentPython/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[{datetime.now(timezone.utc).isoformat()}] {self.address_string()} {format % args}")
+        print(f"[{datetime.now(timezone.utc).isoformat()}] {self.address_string()} HTTP request")
 
     def cors_origin(self) -> str:
+        if self.path.startswith(("/api/settings/", "/api/services")):
+            origin = self.headers.get("Origin", "")
+            return origin if origin in SETTINGS_BROKER.origins else ""
         origins = [origin.strip() for origin in CONFIG.allowed_origins.split(",") if origin.strip()]
         origin = self.headers.get("Origin", "")
         if "*" in origins:
@@ -3086,8 +3205,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             self.send_header("Access-Control-Allow-Origin", self.cors_origin())
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Meridian-CSRF")
+            if self.path.startswith(("/api/settings/", "/api/services")):
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Credentials", "true")
             self.send_header("Access-Control-Expose-Headers", "X-Cache, X-Data-Source, X-Data-Stale, X-Height-Prediction, X-Feature-Count, X-Building-Count, X-Place-Count, X-Inferred-Building-Count, X-Height-Model-Sample-Size, Retry-After")
             self.send_header("Vary", "Origin")
             if body is not None:
@@ -3104,6 +3226,12 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     @limited_request
     def do_OPTIONS(self) -> None:
+        if self.path.startswith(("/api/settings/", "/api/services")):
+            try:
+                SETTINGS_BROKER.validate(self.headers)
+            except BrokerError as error:
+                self.send_json(error.status, {"error": str(error)})
+                return
         self.send_json(204, None)
 
     def read_json_body(self, maximum_bytes: int = 32_768) -> dict[str, Any]:
@@ -3122,18 +3250,168 @@ class ApiHandler(BaseHTTPRequestHandler):
         return body
 
     def handle_error(self, error: Exception) -> None:
+        if isinstance(error, BrokerError):
+            self.send_json(error.status, {"error": str(error)})
+            return
         if isinstance(error, ServiceError):
             headers = {"Retry-After": str(error.retry_after)} if error.retry_after else None
             self.send_json(error.status, {"error": str(error)}, headers)
             return
-        print(f"Unhandled API error: {error}")
+        print("Unhandled API error (details redacted)")
         self.send_json(500, {"error": "The data service failed."})
+
+    def service_route(self, method, parsed):
+        if not parsed.path.startswith(("/api/services", "/api/settings/services")):
+            return False
+        SETTINGS_BROKER.validate(self.headers, mutation=method in {"PUT", "POST", "DELETE"})
+        if parsed.query:
+            raise ServiceError("Service routes do not accept query strings.", 400)
+        settings, runtime = service_foundation()
+        from backend import service_registry
+        if method == "GET" and parsed.path == "/api/services":
+            from backend.service_readiness import readiness
+            products = service_registry.catalogue()
+            dependencies = settings.dependencies or {}
+            installed = {key for key, value in dependencies.items() if value is True}
+            configured = {adapter.id for adapter in runtime.adapters.values() if not adapter.blocker}
+            configured.update({'nominatim.public', 'openfreemap.public', 'nasa.gibs', 'cdse.catalogue', 'worldpop.public', 'serpapi.paid'})
+            for product in products:
+                product.update(readiness(product['id'], installed, configured))
+                if all(dependencies.get(key) is True for key in product['dependencies']):
+                    product['implementation_status'] = 'connected_workflow' if product['kind'] in {'download', 'asset', 'self_hosted'} else 'connected_adapter' if product['kind'] in {'runtime', 'catalogue'} else 'lazy_dependency' if product['id'] == 'cesiumjs.library' else 'loaded_dependency'
+                    if product['permission_blockers']:
+                        product['implementation_status'] = 'permission_blocked'
+            self.send_json(200, {"version": service_registry.VERSION, "services": products})
+            return True
+        job_match = re.fullmatch(r"/api/services/([a-z0-9_.]+)/jobs(?:/([a-z0-9-]+))?", parsed.path)
+        if job_match:
+            from backend.service_jobs import JobError
+            product, job_id = job_match.groups()
+            try:
+                require_service(product)
+                if method == 'POST' and job_id is None:
+                    result = SERVICE_JOBS.submit(product, self.read_json_body())
+                elif method == 'GET' and job_id:
+                    result = SERVICE_JOBS.status(job_id)
+                    if result.get('service_id') != product:
+                        raise ServiceError('Job not found.', 404)
+                elif method == 'DELETE' and job_id:
+                    body = self.read_json_body()
+                    if body:
+                        raise ServiceError('Job cancellation accepts an empty JSON object.', 400)
+                    prior = SERVICE_JOBS.status(job_id)
+                    if prior.get('service_id') != product:
+                        raise ServiceError('Job not found.', 404)
+                    result = SERVICE_JOBS.cancel(job_id)
+                else:
+                    raise ServiceError('Unsupported job operation.', 405)
+            except JobError as error:
+                raise ServiceError(str(error), 409) from None
+            self.send_json(202 if method == 'POST' else 200, result)
+            return True
+        if method == "GET" and parsed.path == "/api/settings/services":
+            token, cookie = SETTINGS_BROKER.session(self.headers)
+            self.send_json(200, {**settings.snapshot(), "csrfToken": token}, {"Set-Cookie": cookie})
+            return True
+        query_match = re.fullmatch(r"/api/services/([a-z0-9_.]+)/query", parsed.path)
+        if method == "POST" and query_match:
+            from backend.providers.query import ProviderQuery
+            body = self.read_json_body()
+            product, query = query_match.group(1), ProviderQuery.from_dict(body)
+            if product == 'cdse.catalogue':
+                from backend.providers.authenticated import AuthenticatedProviders
+                from backend.providers.quota import QuotaRule
+                decision = require_service(product)
+                limit = min(60, int(decision.get('limits', {}).get('requests_hour', 60)))
+                if limit < 1:
+                    raise ServiceError('Local discovery quota exhausted.', 429)
+                token = runtime.quota.reserve(product, 'public', (QuotaRule(limit=limit),))
+                try:
+                    result = AuthenticatedProviders(transport=runtime.transport, resolve_credentials=settings.resolve_credentials,
+                        policy_gate=lambda product, query: service_state(product)).catalogue_query(product, query)
+                except Exception:
+                    runtime.quota.finish(token, ambiguous=True)
+                    raise
+                runtime.quota.finish(token)
+            else:
+                result = runtime.execute(product, query)
+            self.send_json(200, result)
+            return True
+        if method == 'POST' and parsed.path == '/api/services/celestrak.gp/predictions':
+            from backend.providers.query import ProviderQuery
+            from backend.providers.orbits import available, propagate_omm
+            body = self.read_json_body()
+            if set(body) != {'query', 'times'}:
+                raise ServiceError('Predictions require only a bounded GP query and explicit prediction times.', 400)
+            require_service('celestrak.gp')
+            try:
+                propagate_omm([], body['times'])
+            except ValueError:
+                raise ServiceError('Prediction times must be 1..180 increasing timezone-aware timestamps spanning at most two hours.', 400) from None
+            if not available():
+                raise ServiceError('Optional sgp4 is not installed; orbital elements remain available without predicted positions.', 409)
+            envelope = runtime.execute('celestrak.gp', ProviderQuery.from_dict(body['query']))
+            records = [{**record, 'source': envelope['provenance']['source'], 'ingested_at': envelope['ingested_at']} for record in envelope['records']]
+            self.send_json(200, propagate_omm(records, body['times']))
+            return True
+        match = re.fullmatch(r"/api/settings/services/([a-z0-9_.]+)(/credentials|/test)?", parsed.path)
+        if match and method in {"PUT", "DELETE", "POST"}:
+            product, action = match.groups()
+            body = self.read_json_body()
+            revision = body.pop("revision", None)
+            try:
+                if method == "PUT" and action is None:
+                    result = settings.update(product, body, revision)
+                elif method == "PUT" and action == "/credentials":
+                    if set(body) != {"credentials"}:
+                        raise ServiceError("Credential replacement requires only credentials and revision.", 400)
+                    result = settings.replace_credentials(product, body["credentials"], revision)
+                elif method == "DELETE" and action == "/credentials":
+                    if body:
+                        raise ServiceError("Credential deletion requires only revision.", 400)
+                    result = settings.delete_credentials(product, revision)
+                elif method == "POST" and action == "/test":
+                    if type(revision) is not int or revision != settings.snapshot()["revision"]:
+                        raise ServiceError("Settings revision changed; reload before testing.", 409)
+                    require_service(product)
+                    from backend.providers.query import ProviderQuery
+                    if set(body) != {"query"}:
+                        raise ServiceError("Explicit connection tests require a bounded query; tests consume local/provider quota.", 400)
+                    result = runtime.execute(product, ProviderQuery.from_dict(body["query"]))
+                else:
+                    raise ServiceError("Unsupported service operation.", 405)
+            except Exception as error:
+                raise service_mutation_error(error) from None
+            self.send_json(200, result)
+            return True
+        raise ServiceError("Not found.", 404)
 
     @limited_request
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         query = {}
         try:
+            if self.service_route("GET", parsed):
+                return
+            if not parsed.path.startswith("/api/"):
+                SETTINGS_BROKER.validate(self.headers)
+                target = (UI_ROOT / urllib.parse.unquote(parsed.path).lstrip("/")).resolve() if parsed.path != "/" else UI_ROOT / "index.html"
+                if not target.is_relative_to(UI_ROOT.resolve()) or not target.is_file() or target.suffix.lower() not in {".html", ".js", ".css", ".png", ".jpg", ".svg", ".woff2", ".json"}:
+                    raise ServiceError("Not found.", 404)
+                data = target.read_bytes()
+                if target.name == 'index.html':
+                    # Host has already passed the exact loopback/port allowlist.
+                    origin = 'http://' + self.headers.get('Host').lower()
+                    configuration = '<script>window.MONUMENT_API_URL=' + json.dumps(origin) + ';</script>'
+                    data = data.replace(b'<head>', b'<head>' + configuration.encode('ascii'), 1)
+                self.send_response(200)
+                self.send_header("Content-Type", mimetypes.guess_type(str(target))[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if parsed.path in {"/api/map/city-boundary", "/api/map/roads"}:
                 try:
                     query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, max_num_fields=16)
@@ -3256,6 +3534,8 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         try:
+            if self.service_route("POST", parsed):
+                return
             body = self.read_json_body()
             if parsed.path == "/api/agent/runs":
                 run_id = AGENT.start_run(str(body.get("sessionId") or ""), body.get("message"), body.get("mapContext"))
@@ -3318,6 +3598,8 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         try:
+            if self.service_route("DELETE", parsed):
+                return
             if parsed.path == "/api/workspace":
                 CACHE.clear_workspace()
                 self.send_json(204, None)
@@ -3335,6 +3617,14 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.send_json(204, None)
                 return
             raise ServiceError("Not found.", 404)
+        except Exception as error:
+            self.handle_error(error)
+
+    @limited_request
+    def do_PUT(self) -> None:
+        try:
+            if not self.service_route("PUT", urllib.parse.urlparse(self.path)):
+                raise ServiceError("Not found.", 404)
         except Exception as error:
             self.handle_error(error)
 
@@ -3359,6 +3649,12 @@ def main() -> None:
         server.serve_forever()
     finally:
         REALTIME.stop()
+        if PROVIDER_RUNTIME is not None:
+            PROVIDER_RUNTIME.close()
+        if SERVICE_JOBS is not None:
+            SERVICE_JOBS.close()
+        if SERVICE_SETTINGS is not None:
+            SERVICE_SETTINGS.close()
         server.server_close()
         CACHE.close()
 

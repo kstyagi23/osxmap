@@ -142,6 +142,8 @@ class OpenBuildingMapGeometryTests(unittest.TestCase):
     def test_request_gate_returns_retryable_busy_response(self) -> None:
         class Handler:
             def __init__(self) -> None:
+                self.headers = {"Host": f"127.0.0.1:{server.CONFIG.port}"}
+                self.path = "/api/health"
                 self.response = None
 
             def send_json(self, status, body, headers) -> None:
@@ -338,13 +340,19 @@ class MapLocationSearchTests(unittest.TestCase):
         for record in [None, "error", {"lat": "nan", "lon": "77"}, {"lat": "28", "lon": "77", "address": "invalid"}]:
             self.assertIsNone(server.location_result(record))
 
-    def test_geocoding_and_autocomplete_fall_back_when_osm_is_unavailable(self) -> None:
+    def test_geocoding_falls_back_but_autocomplete_stays_local_when_osm_is_unavailable(self) -> None:
         with mock.patch.object(server, "nominatim_search", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_osm_category_places", side_effect=server.ServiceError("Unavailable", 503)), mock.patch.object(server, "search_nominatim_places", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_serp_places", return_value=[self.place]) as fallback:
+            self.assertEqual(server.suggest_map_locations("Darma", "IN"), [])
+            fallback.assert_not_called()
             result = server.resolve_location("Darma Valley", "IN")
-            suggestions = server.suggest_map_locations("Darma", "IN")
+            fallback.assert_called_once()
+            with mock.patch.object(server, "lookup_places") as discover, mock.patch.object(server, "nominatim_search") as city:
+                suggestions = server.suggest_map_locations("Darma", "IN")
+                discover.assert_not_called()
+                city.assert_not_called()
         self.assertEqual(result["shortName"], "Darma valley")
-        self.assertEqual(suggestions[0]["shortName"], "Darma valley")
-        self.assertGreaterEqual(fallback.call_count, 1)
+        self.assertEqual(suggestions, [])
+        fallback.assert_called_once()
 
     def test_total_provider_outage_preserves_specific_error(self) -> None:
         with mock.patch.object(server, "nominatim_search", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_osm_category_places", return_value=[]), mock.patch.object(server, "search_nominatim_places", side_effect=server.ServiceError("Timed out", 503)), mock.patch.object(server, "search_serp_places", side_effect=server.ServiceError("Place provider unavailable", 503)):
@@ -497,13 +505,16 @@ class MapLocationSearchTests(unittest.TestCase):
         with mock.patch.object(server, "nominatim_search", return_value=[city]) as search:
             first = server.resolve_location("Delhi", "IN")
             second = server.resolve_location("Delhi", "IN")
+            self.assertEqual(server.suggest_map_locations("Del", "IN"), [])
+            self.cache.put_suggestions("del", "in", [city])
             suggestions = server.suggest_map_locations("Del", "IN")
             cached_suggestions = server.suggest_map_locations("Del", "IN")
 
         self.assertFalse(first["cached"])
         self.assertTrue(second["cached"])
+        self.assertEqual(suggestions, [city])
         self.assertEqual(suggestions, cached_suggestions)
-        self.assertEqual(search.call_count, 2)
+        search.assert_called_once_with("Delhi", "in", 1)
 
 
 class MapAgentToolTests(unittest.TestCase):

@@ -9,15 +9,18 @@ let queuedWrites = 0;
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(
-  caches.delete('monument-map-v1').catch(() => {}).then(() => self.clients.claim()),
+  (async () => {
+    await caches.delete('monument-map-v1').catch(() => {});
+    const cache = await caches.open(CACHE_NAME);
+    for (const request of await cache.keys()) if (!cacheable(request)) await cache.delete(request);
+    await self.clients.claim();
+  })(),
 ));
 
 function cacheable(request) {
   if (request.method !== 'GET') return false;
   const url = new URL(request.url);
-  return url.hostname === 'tiles.openfreemap.org'
-    || (url.hostname === 'elevation-tiles-prod.s3.amazonaws.com' && url.pathname.startsWith('/terrarium/'))
-    || (url.hostname === 'services.arcgisonline.com' && /^\/ArcGIS\/rest\/services\/World_Imagery\/MapServer\/tile\/\d+\/\d+\/\d+$/.test(url.pathname));
+  return url.protocol === 'https:' && url.hostname === 'tiles.openfreemap.org';
 }
 
 async function entries(cache) {
@@ -104,7 +107,8 @@ self.addEventListener('fetch', (event) => {
     }
     try { return (await pending.get(key)).clone(); }
     catch (error) {
-      if (cached && !imagery) return cached;
+      // Expired entries are not a perpetual offline entitlement.
+      if (cached && !imagery && Date.now() - Number(cached.headers.get('X-Monument-Cached-At')) < MAX_AGE) return cached;
       throw error;
     }
   })());
