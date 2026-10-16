@@ -1931,6 +1931,11 @@ class CityExplorer {
     this.liveLayers = createLiveLayers({ map: this.map, client: this.serviceClient, Popup: window.maplibregl.Popup, onStatus: (status) => {
       const element = document.getElementById('service-layer-status');
       if (element) element.textContent = typeof status === 'string' ? status : `${status.id}: ${status.state}${status.count !== undefined ? ` / ${status.count} geographic features` : ''}${status.truncated ? ' / truncated' : ''}${status.provenance?.license ? ` / ${status.provenance.license}` : ''}`;
+      if (typeof status === 'object') document.querySelectorAll('[data-service-layer]').forEach((button) => {
+        if (button.dataset.serviceLayer !== status.id) return;
+        button.setAttribute('data-live-status', status.state);
+        if (['blocked', 'cancelled'].includes(status.state)) button.setAttribute('aria-pressed', 'false');
+      });
     } });
     this.rendererController = createRendererController({ map: this.map, container: document.getElementById('globe'), liveLayers: this.liveLayers, client: this.serviceClient, onChange: (renderer) => {
       const globe = renderer === 'cesium';

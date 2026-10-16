@@ -31,6 +31,7 @@ test('dedicated Settings page initializes without map globals or external SDKs',
   const html = readFileSync(join(__dirname, 'settings.html'), 'utf8');
   assert.match(html, /settings-entry\.js/);
   assert.doesNotMatch(html, /maplibre|cesium|app\.js/);
+  assert.match(html, /class="settings-document"/);
 });
 
 test('map Settings launcher remains independently wired with no MapLibre or WebGL', () => {
@@ -60,6 +61,7 @@ test('map startup is no longer delayed by a service settings request', () => {
 test('Settings page mobile shell is content-sized and toolbar actions stay above search', () => {
   const settingsCss = readFileSync(join(__dirname, 'service-settings.css'), 'utf8');
   assert.match(settingsCss, /\.service-settings\.ss-shell\.ss-page\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*visible/);
+  assert.match(settingsCss, /html\.settings-document\s*\{[^}]*overflow:\s*auto/);
   const mapCss = readFileSync(join(__dirname, 'styles.css'), 'utf8');
   assert.match(mapCss, /\.app-actions\s*\{[^}]*z-index:\s*30/);
   assert.match(mapCss, /\.floating-search\s*\{[^}]*z-index:\s*25/);

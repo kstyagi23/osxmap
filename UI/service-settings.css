@@ -1,4 +1,5 @@
 /* Shared modal/page settings surface. No renderer or remote assets required. */
+html.settings-document { height: auto; min-height: 100%; overflow: auto; }
 .settings-page { overflow: auto; height: auto; min-height: 100dvh; background: var(--surface-solid); }
 .settings-page-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; max-width: 1280px; margin: auto; padding: 24px 32px; }
 .settings-page-brand { display: flex; align-items: center; gap: 12px; font-size: 22px; font-weight: 650; letter-spacing: -.04em; color: var(--ink); text-decoration: none; }

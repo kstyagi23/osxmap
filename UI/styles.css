@@ -760,6 +760,9 @@ dialog p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 
 #live-layers-content button[data-service-state="available"]::after { content: 'Show'; color: var(--accent); }
 #live-layers-content button[aria-pressed="true"] { border-color: var(--accent); }
 #live-layers-content button[aria-pressed="true"]::after { content: 'Visible'; color: var(--accent); }
+#live-layers-content button[data-live-status="loading"]::after { content: 'Loading'; }
+#live-layers-content button[data-live-status="failed"]::after { content: 'Unavailable'; color: var(--error); }
+#live-layers-content button[data-live-status="stale"]::after { content: 'Stale'; color: var(--error); }
 .live-layers-panel footer { padding: 16px 20px; border-top: 1px solid var(--line); }
 .live-layers-panel footer a { color: var(--accent); font-size: 11px; text-decoration: none; }
 @media (max-width: 700px) { .live-layers-panel { top: 74px; right: 10px; width: min(370px, calc(100vw - 20px)); max-height: calc(100dvh - 94px); } .app-actions { gap: 4px; } .settings-page-link { padding: 0 8px; } }

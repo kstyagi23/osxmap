@@ -204,6 +204,8 @@ test('settings master/detail lists the complete catalogue and defaults to a free
   assert.equal(ui.dialog.tagName, 'section'); assert.equal(rows().length, 151);
   assert.equal(rows().find((node) => node.attributes['aria-pressed'] === 'true').attributes['data-service-id'], 'service.1');
   assert.equal(ui.dialog.querySelectorAll('article').length, 1); assert.equal(ui.dialog.querySelectorAll('form').length, 1);
+  await ui.open('service.5');
+  assert.equal(rows().find((node) => node.attributes['aria-pressed'] === 'true').attributes['data-service-id'], 'service.5');
   rows()[0].dispatch('click');
   const secret = ui.dialog.querySelectorAll('input[type="password"]')[0]; secret.value = 'do-not-retain';
   rows()[1].dispatch('click'); assert.equal(secret.value, '');
