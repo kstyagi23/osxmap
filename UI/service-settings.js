@@ -272,8 +272,13 @@ export function initServiceSettings({ apiBase, mount = document.body, client = c
         for (const name of ['all', ...[...new Set(catalogue.map((product) => product.category).filter(Boolean))].sort()]) { const option = element('option', name === 'all' ? 'All categories' : readable(name)); option.value = name; category.append(option); }
         category.value = [...category.options].some((option) => option.value === previous) ? previous : 'all';
         status.textContent = ''; recovery.hidden = true; render(); onChange(snapshot); return snapshot;
-      } catch {
-        if (!disposed) { status.textContent = 'Service settings unavailable. Your last loaded settings are unchanged.'; recovery.hidden = false; }
+      } catch (error) {
+        if (!disposed) {
+          status.textContent = error.status === 403
+            ? 'This page origin is not authorized to access Service Settings. Open backend Settings below. Your last loaded settings are unchanged.'
+            : 'Service settings unavailable. Your last loaded settings are unchanged.';
+          recovery.hidden = false;
+        }
         return client.snapshot || snapshot;
       } finally { loading = null; }
     })(); return loading;

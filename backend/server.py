@@ -3394,7 +3394,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             if self.service_route("GET", parsed):
                 return
             if not parsed.path.startswith("/api/"):
-                SETTINGS_BROKER.validate(self.headers)
+                SETTINGS_BROKER.validate(self.headers, document_navigation=parsed.path in {'/', '/index.html', '/settings.html'})
                 target = (UI_ROOT / urllib.parse.unquote(parsed.path).lstrip("/")).resolve() if parsed.path != "/" else UI_ROOT / "index.html"
                 if not target.is_relative_to(UI_ROOT.resolve()) or not target.is_file() or target.suffix.lower() not in {".html", ".js", ".css", ".png", ".jpg", ".svg", ".woff2", ".json"}:
                     raise ServiceError("Not found.", 404)

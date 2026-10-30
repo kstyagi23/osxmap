@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "name": "osxmaps",
+  "color": "",
+  "dockState": {
+    "zones": {
+      "left": {
+        "position": "left",
+        "visible": false,
+        "size": 260,
+        "layout": null
+      },
+      "right": {
+        "position": "right",
+        "visible": false,
+        "size": 260,
+        "layout": null
+      },
+      "bottom": {
+        "position": "bottom",
+        "visible": false,
+        "size": 240,
+        "layout": null
+      },
+      "center": {
+        "position": "center",
+        "visible": true,
+        "size": 0,
+        "layout": {
+          "type": "tabs",
+          "id": "f57225f3-c106-4426-99c3-84d41dd6a39c",
+          "panelIds": [
+            "b06f0782-0c4a-43ff-8ba5-410533b816a0"
+          ],
+          "activeIndex": 0
+        }
+      }
+    }
+  },
+  "panels": {
+    "ea5f2260-a266-42bc-9f4a-14b28c0443cc": {
+      "type": "editor",
+      "title": "Untitled",
+      "sidebarView": "explorer",
+      "sidebarVisible": true
+    },
+    "f275a0b1-e701-4b64-b829-2ac29ce75726": {
+      "type": "browser",
+      "title": "BRAHMAI - Google Search",
+      "tabs": [
+        {
+          "id": "tab-975e8c62-cef6-49e4-9921-c33e9c7217c7",
+          "url": "cate://newtab",
+          "title": ""
+        }
+      ],
+      "activeTabId": "tab-975e8c62-cef6-49e4-9921-c33e9c7217c7"
+    },
+    "b06f0782-0c4a-43ff-8ba5-410533b816a0": {
+      "type": "canvas",
+      "title": "Canvas"
+    }
+  },
+  "canvases": {
+    "b06f0782-0c4a-43ff-8ba5-410533b816a0": {
+      "id": "b06f0782-0c4a-43ff-8ba5-410533b816a0",
+      "canvasNodes": {
+        "df660f70-1d6d-4782-9e41-e697db1ae30e": {
+          "id": "df660f70-1d6d-4782-9e41-e697db1ae30e",
+          "origin": {
+            "x": 35,
+            "y": 49
+          },
+          "size": {
+            "width": 1064,
+            "height": 622
+          },
+          "zOrder": 7,
+          "creationIndex": 1,
+          "animationState": "idle",
+          "dockLayout": {
+            "type": "tabs",
+            "id": "b26b54d0-a81d-4c84-a23b-ff5b6419650d",
+            "panelIds": [
+              "ea5f2260-a266-42bc-9f4a-14b28c0443cc"
+            ],
+            "activeIndex": 0
+          }
+        },
+        "ca647519-cfb2-48c9-b7f7-7cda15c1ecd3": {
+          "id": "ca647519-cfb2-48c9-b7f7-7cda15c1ecd3",
+          "origin": {
+            "x": -1060,
+            "y": -620
+          },
+          "size": {
+            "width": 1064,
+            "height": 622
+          },
+          "zOrder": 9,
+          "creationIndex": 2,
+          "animationState": "idle",
+          "dockLayout": {
+            "type": "tabs",
+            "id": "1b66d46c-0cbf-4a9f-804a-84df96d77a01",
+            "panelIds": [
+              "f275a0b1-e701-4b64-b829-2ac29ce75726"
+            ],
+            "activeIndex": 0
+          }
+        }
+      },
+      "zoomLevel": 1.3,
+      "viewportOffset": {
+        "x": 1392.6174212482733,
+        "y": 804.6741182041039
+      }
+    }
+  }
+}

@@ -251,6 +251,55 @@ test('page refresh failure retains loaded controls and offers the actual backend
   assert.equal(link.href, 'http://127.0.0.1:8787/settings.html'); assert.equal(link.parent.hidden, false); ui.destroy();
 });
 
+test('empty aircraft response is no data, never visible observations', async () => {
+  const map = mapFixture(), doc = documentFixture(), statuses = [];
+  const client = { snapshot: { services: [{ id: 'adsblol.public', effective_enabled: true }] }, subscribe: () => () => {},
+    query: async () => ({ state: 'fresh', features: [], records: [], empty_reason: 'no_reports' }) };
+  const { createLiveLayers } = load('live-layers.js');
+  const live = createLiveLayers({ map, client, document: doc, onStatus: (status) => statuses.push(status) });
+  live.show('adsblol.public', { query: {} }); await tick();
+  assert.equal(statuses.at(-1).state, 'empty');
+  assert.equal(statuses.at(-1).freshness, 'fresh');
+  assert.equal(statuses.at(-1).count, 0);
+  assert.match(statuses.at(-1).message, /Receiver coverage varies/);
+  live.destroy();
+});
+
+test('moving viewport cancels obsolete aircraft request and fetches updated bounds', async () => {
+  const map = mapFixture(), doc = documentFixture(), handlers = {}, timers = [], calls = [];
+  map.on = (type, callback) => { handlers[type] = callback; };
+  map.off = (type) => { delete handlers[type]; };
+  let bbox = [0, 0, 1, 1];
+  const client = { snapshot: { services: [{ id: 'adsblol.public', effective_enabled: true }] }, subscribe: () => () => {},
+    query(id, query, options) { calls.push({ query, signal: options.signal }); return new Promise(() => {}); } };
+  const { createLiveLayers } = load('live-layers.js', {}, { setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout() {} });
+  const live = createLiveLayers({ map, client, document: doc });
+  live.show('adsblol.public', { query: () => ({ bbox }) });
+  assert.equal(calls.length, 1);
+  bbox = [10, 50, 11, 51]; handlers.moveend();
+  assert.equal(calls[0].signal.aborted, true);
+  assert.equal(calls.length, 1);
+  timers.at(-1)();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].query.bbox, bbox);
+  live.destroy(); assert.equal(handlers.moveend, undefined);
+});
+
+test('forbidden Settings reads explain origin recovery without exposing server errors', async () => {
+  const doc = documentFixture();
+  const client = { apiOrigin: 'http://127.0.0.1:8787', catalogue: async () => { const error = new Error('sensitive upstream text'); error.status = 403; throw error; }, settings: async () => ({ services: [] }) };
+  const { initServiceSettings } = load('service-settings.js', { createServiceClient: () => client });
+  const ui = initServiceSettings({ mount: doc.body, client });
+  await ui.refresh();
+  const status = ui.dialog.querySelectorAll('p').find((node) => node.attributes.role === 'status');
+  assert.match(status.textContent, /page origin is not authorized/);
+  assert.doesNotMatch(status.textContent, /sensitive upstream text/);
+  const link = ui.dialog.querySelectorAll('a[href]').find((node) => node.textContent === 'Open backend Settings');
+  assert.equal(link.href, 'http://127.0.0.1:8787/settings.html');
+  assert.equal(link.parent.hidden, false);
+  ui.destroy();
+});
+
 test('Cesium assets load only on request and use one pinned JS/CSS/assets release', async () => {
   const doc = documentFixture(), win = {};
   const { loadCesium, CESIUM_BASE_URL } = load('cesium-view.js');

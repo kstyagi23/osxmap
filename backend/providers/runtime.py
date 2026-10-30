@@ -241,7 +241,9 @@ class ProviderRuntime:
                 "errors": errors, "cached": False}
             if getattr(adapter, 'format', 'json') == 'protobuf':
                 result.update(state=parsed['state'], feed_timestamp=parsed['feed_timestamp'],
-                              feed_age_seconds=parsed['feed_age_seconds'], stale=parsed['stale'], provenance=parsed['provenance'])
+                               feed_age_seconds=parsed['feed_age_seconds'], stale=parsed['stale'], provenance=parsed['provenance'])
+            if provider == 'adsblol.public':
+                result.update(query_diagnostics=parsed['query_diagnostics'], empty_reason=parsed['empty_reason'])
             with self._lock:
                 if flight.cancel.is_set():
                     raise ServiceError("Provider request cancelled.", 499)

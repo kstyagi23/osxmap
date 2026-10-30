@@ -25,13 +25,18 @@ class LocalBroker:
         self._sessions = {}
         self._lock = threading.Lock()
 
-    def validate(self, headers, mutation=False):
+    def validate(self, headers, mutation=False, document_navigation=False):
         if headers.get("Host", "").lower() not in self.hosts:
             raise BrokerError("Untrusted local Host header")
         origin = headers.get("Origin", "")
         if origin and origin not in self.origins:
             raise BrokerError("Untrusted Settings origin")
-        if headers.get("Sec-Fetch-Site", "") == "cross-site":
+        # Navigating to public HTML is not a credential-broker API request.
+        # The loaded page subsequently makes same-origin, session-bound calls.
+        navigation = (document_navigation and not mutation and not origin
+                      and headers.get("Sec-Fetch-Mode", "") == "navigate"
+                      and headers.get("Sec-Fetch-Dest", "") == "document")
+        if headers.get("Sec-Fetch-Site", "") == "cross-site" and not navigation:
             raise BrokerError("Cross-site Settings access is not permitted")
         if mutation:
             if not origin or origin not in self.origins:

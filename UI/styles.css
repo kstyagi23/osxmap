@@ -761,6 +761,7 @@ dialog p { margin: 0 0 20px; color: var(--muted); font-size: 12px; line-height: 
 #live-layers-content button[aria-pressed="true"] { border-color: var(--accent); }
 #live-layers-content button[aria-pressed="true"]::after { content: 'Visible'; color: var(--accent); }
 #live-layers-content button[data-live-status="loading"]::after { content: 'Loading'; }
+#live-layers-content button[data-live-status="empty"][aria-pressed="true"]::after { content: 'No data'; color: var(--muted); }
 #live-layers-content button[data-live-status="failed"]::after { content: 'Unavailable'; color: var(--error); }
 #live-layers-content button[data-live-status="stale"]::after { content: 'Stale'; color: var(--error); }
 .live-layers-panel footer { padding: 16px 20px; border-top: 1px solid var(--line); }

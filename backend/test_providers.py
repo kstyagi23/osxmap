@@ -199,6 +199,22 @@ class TransportTests(OfflineCase):
 
 
 class AdapterTests(OfflineCase):
+    def test_aircraft_millisecond_snapshot_and_empty_diagnostics(self):
+        sample = {'now': 1700000000000, 'ac': [{'hex': 'abc123', 'lat': 51, 'lon': 0, 'seen_pos': 2}]}
+        result = self.parse('adsblol.public', sample, bbox=BBOX)
+        self.assertEqual(result['features'][0]['properties']['observed_at'], '2023-11-14T22:13:18Z')
+        self.assertEqual(result['query_diagnostics']['snapshot_at'], '2023-11-14T22:13:20Z')
+        self.assertIsNone(result['empty_reason'])
+        empty = self.parse('adsblol.public', {'now': 1700000000000, 'ac': []}, bbox=BBOX)
+        self.assertEqual(empty['empty_reason'], 'no_reports')
+        self.assertEqual(empty['query_diagnostics']['provider_records'], 0)
+        outside = self.parse('adsblol.public', sample, bbox=(10, 50, 11, 52))
+        self.assertEqual(outside['empty_reason'], 'outside_viewport')
+        self.assertEqual(outside['query_diagnostics']['outside_viewport'], 1)
+        self.assertEqual(outside['rejected_records'], 0)
+        invalid = self.parse('adsblol.public', {'ac': [{'hex': 'bad'}]}, bbox=BBOX)
+        self.assertEqual(invalid['empty_reason'], 'no_valid_positions')
+
     def parse(self, provider, data, **kwargs):
         return ADAPTERS[provider].parse(data, ProviderQuery(**kwargs))
 
@@ -286,6 +302,18 @@ class FixtureTransport:
 
 
 class RuntimeTests(OfflineCase):
+    def test_aircraft_response_retains_empty_diagnostics_through_cache(self):
+        transport = mock.Mock()
+        transport.fetch.return_value = b'{"now":1700000000000,"ac":[]}'
+        runtime = ProviderRuntime(self.quota, transport=transport, policy_gate=lambda *_: True)
+        self.addCleanup(runtime.close)
+        for _ in range(2):
+            result = runtime.execute('adsblol.public', ProviderQuery(bbox=BBOX))
+            self.assertEqual(result['features'], [])
+            self.assertEqual(result['empty_reason'], 'no_reports')
+            self.assertEqual(result['query_diagnostics']['bbox'], list(BBOX))
+        self.assertEqual(transport.fetch.call_count, 1)
+
     def test_policy_callbacks_never_run_under_runtime_lock_and_zero_limit_denies(self):
         fixture = FixtureTransport()
         runtime = None

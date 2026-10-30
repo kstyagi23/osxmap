@@ -63,7 +63,15 @@ export function createLiveLayers({ map, client, document: doc = globalThis.docum
       entry.envelope = { ...envelope, data };
       install(entry); map.getSource(entry.source).setData(data);
       const { features, records, data: ignoredData, ...metadata } = envelope;
-      onStatus({ ...metadata, id: entry.id, count: data.features.length });
+      const empty = !data.features.length && !records?.length;
+      const emptyMessage = entry.id === 'adsblol.public'
+        ? envelope.empty_reason === 'outside_viewport' ? 'Aircraft reported nearby, but none inside this viewport. Pan or zoom out.'
+          : envelope.empty_reason === 'no_valid_positions' ? 'Reports received, but no usable aircraft positions in this viewport.'
+          : 'No aircraft reported in this area. Receiver coverage varies; this is not proof of empty airspace. Pan to another area.'
+        : 'No displayable data returned for this query.';
+      onStatus({ ...metadata, id: entry.id, count: data.features.length,
+        freshness: envelope.state, state: empty ? 'empty' : envelope.state,
+        message: empty ? emptyMessage : undefined });
       if (Array.isArray(records) && records.length) {
         const container = doc.getElementById?.('service-record-details');
         if (container) {
@@ -92,6 +100,15 @@ export function createLiveLayers({ map, client, document: doc = globalThis.docum
   }
   function resume() { for (const entry of layers.values()) { clear(entry); if (runnable(entry)) refresh(entry); } }
   const visibility = () => resume(); doc?.addEventListener('visibilitychange', visibility);
+  const move = () => {
+    for (const entry of layers.values()) {
+      if (!runnable(entry) || typeof entry.query !== 'function') continue;
+      clear(entry);
+      onStatus({ id: entry.id, state: 'loading' });
+      entry.timer = setTimeout(() => refresh(entry), 350);
+    }
+  };
+  map.on?.('moveend', move);
   const style = () => { for (const entry of layers.values()) if (runnable(entry)) { install(entry); if (entry.envelope) map.getSource(entry.source).setData(entry.envelope.data); } };
   map.on?.('style.load', style);
   const unsubscribe = client.subscribe((event) => {
@@ -134,6 +151,6 @@ export function createLiveLayers({ map, client, document: doc = globalThis.docum
     },
     setActive(value) { active = Boolean(value); resume(); },
     refresh() { resume(); },
-    destroy() { if (disposed) return; disposed = true; unsubscribe(); doc?.removeEventListener('visibilitychange', visibility); map.off?.('style.load', style); for (const id of layers.keys()) this.remove(id); },
+    destroy() { if (disposed) return; disposed = true; unsubscribe(); doc?.removeEventListener('visibilitychange', visibility); map.off?.('style.load', style); map.off?.('moveend', move); for (const id of layers.keys()) this.remove(id); },
   };
 }

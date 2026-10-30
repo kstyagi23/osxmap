@@ -274,11 +274,17 @@ class Adapter:
         elif self.id == "adsblol.public":
             candidates = rows(value, "ac")
             observed = value.get("now") if isinstance(value, dict) else None
+            if number(observed, 10**12, 4102444800000):
+                observed /= 1000
+            outside = 0
             for row in candidates:
                 shape = point(row.get("lon"), row.get("lat"))
                 identity = row.get("hex")
-                if shape is None or not isinstance(identity, str) or not inside(shape, query.bbox):
+                if shape is None or not isinstance(identity, str):
                     rejected += 1
+                    continue
+                if not inside(shape, query.bbox):
+                    outside += 1
                     continue
                 seen = row.get("seen_pos")
                 observed_at = epoch(observed - seen) if number(observed, 0, 4102444800) and number(seen, 0, 86400) else None
@@ -409,9 +415,17 @@ class Adapter:
             raise ServiceError(self.blocker or "Provider adapter is unsupported.", 409)
         count = max(len(records), len(features))
         truncated = count > query.limit or len(candidates) >= query.limit or number(hits, 0, 10**12) and hits > count
-        return {"features": features[:query.limit], "records": records[:query.limit], "partial": bool(rejected),
+        result = {"features": features[:query.limit], "records": records[:query.limit], "partial": bool(rejected),
                 "truncated": bool(truncated), "rejected_records": rejected,
                 "has_more": bool(number(hits, 0, 10**12) and hits > len(candidates))}
+        if self.id == 'adsblol.public':
+            result['query_diagnostics'] = {'bbox': list(query.bbox), 'provider_records': len(candidates),
+                'outside_viewport': outside, 'invalid_records': rejected, 'in_viewport': len(features),
+                'snapshot_at': epoch(observed)}
+            result['empty_reason'] = (None if features else 'no_reports' if not candidates
+                else 'outside_viewport' if outside == len(candidates) else 'no_valid_positions')
+            result['truncated'] = len(features) > query.limit
+        return result
 
 
 ADAPTERS = {a.id: a for a in (

@@ -43,7 +43,7 @@ class ServiceIntegrationTests(unittest.TestCase):
     def test_settings_html_serves_standalone_with_exact_custom_port_configuration(self):
         handler = object.__new__(server.ApiHandler)
         handler.path = '/settings.html'
-        handler.headers = {'Host': '127.0.0.1:9898'}
+        handler.headers = {'Host': '127.0.0.1:9898', 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document'}
         handler.wfile = io.BytesIO()
         handler.responses = []
         handler.send_response = lambda status: handler.responses.append(status)
